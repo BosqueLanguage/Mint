@@ -1,12 +1,5 @@
 #include "server.h"
 
-#define READ_BYTE_SIZE 8192
-
-#define QUEUE_DEPTH 256
-
-#define EVENT_TYPE_ACCEPT 0
-#define EVENT_TYPE_READ   1
-#define EVENT_TYPE_WRITE  2
 
 //The static root directory that we serve files from (needs to be fully qualified)
 char* static_rootdir = nullptr;
@@ -19,7 +12,6 @@ const char* static_prefix = "/static/";
 char fullpath[PATH_MAX + 1];
 char normalizedpath[PATH_MAX + 1];
 
-#define HTTP_MAX_REQUEST_SIZE 8192
 char http_request[HTTP_MAX_REQUEST_SIZE];
 
 #define SERVER_STRING "Server: Bosque RSHook\r\n"
@@ -67,13 +59,7 @@ const char* http_404_static_content = \
                                 "</body>"
                                 "</html>";
 
-struct request
-{
-    int event_type;
-    int iovec_count;
-    int client_socket;
-    struct iovec iov[];
-};
+
 
 //Since we can only have one outstanding accept at a time we pre-allocate its request structure
 struct request s_accept_req;
