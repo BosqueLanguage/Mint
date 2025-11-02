@@ -1,5 +1,22 @@
 #include "server.h"
 
+#include <csignal>
+
+#include <netinet/in.h>
+#include <liburing.h>
+
+struct request
+{
+    int event_type;
+    int iovec_count;
+    int client_socket;
+    struct iovec iov[];
+};
+
+//Since we can only have one outstanding accept at a time we pre-allocate its request structure
+struct request s_accept_req;
+
+struct io_uring ring;
 
 //The static root directory that we serve files from (needs to be fully qualified)
 char* static_rootdir = nullptr;
@@ -13,8 +30,6 @@ char fullpath[PATH_MAX + 1];
 char normalizedpath[PATH_MAX + 1];
 
 char http_request[HTTP_MAX_REQUEST_SIZE];
-
-#define SERVER_STRING "Server: Bosque RSHook\r\n"
 
 const char* unsupported_verb = \
                                 "HTTP/1.0 400 Bad Request\r\n"
@@ -58,13 +73,6 @@ const char* http_404_static_content = \
                                 "<p>Request for an unknown static resource</p>"
                                 "</body>"
                                 "</html>";
-
-
-
-//Since we can only have one outstanding accept at a time we pre-allocate its request structure
-struct request s_accept_req;
-
-struct io_uring ring;
 
 void string_to_lower(char* str) {
     if(str == nullptr) {

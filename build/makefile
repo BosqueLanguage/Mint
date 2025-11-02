@@ -6,6 +6,8 @@ SRC_DIR=$(MAKE_PATH)/../src/
 OUT_EXE=$(BUILD_DIR)output/
 OUT_OBJ=$(BUILD_DIR)output/obj/
 
+COMMON_DIR=$(SRC_DIR)
+MEMORY_DIR=$(SRC_DIR)memory/
 SERVER_DIR=$(SRC_DIR)server/
 
 RSHOOK_TEST_DIR=$(MAKE_PATH)/../test/
@@ -22,7 +24,15 @@ CPPFLAGS_OPT.release=-O3 -march=x86-64-v3
 CPPFLAGS=${CPPFLAGS_OPT.${BUILD}} ${CPP_STDFLAGS}
 CPPFLAGS_TEST=${CPPFLAGS_OPT.dev} ${CPP_STDFLAGS}
 
-SERVER_HEADERS=$(SERVER_DIR)common.h $(SERVER_DIR)server.h
+COMMON_HEADERS=$(COMMON_DIR)common.h
+COMMON_SOURCES=$(COMMON_DIR)common.cpp
+COMMON_OBJS=$(OUT_OBJ)common.o
+
+MEMORY_HEADERS=$(MEMORY_DIR)alloc.h
+MEMORY_SOURCES=$(MEMORY_DIR)alloc.cpp
+MEMORY_OBJS=$(OUT_OBJ)alloc.o
+
+SERVER_HEADERS=$(SERVER_DIR)server.h
 SERVER_SOURCES=$(SERVER_DIR)server.cpp
 SERVER_OBJS=$(OUT_OBJ)server.o
 
@@ -30,13 +40,21 @@ SERVER_OBJS=$(OUT_OBJ)server.o
 
 all: $(OUT_EXE)rshook
 
-$(OUT_EXE)rshook: $(SERVER_OBJS) $(SERVER_HEADERS) $(SRC_DIR)rshook.cpp
+$(OUT_EXE)rshook: $(COMMON_OBJS) $(MEMORY_OBJS) $(SERVER_OBJS) $(COMMON_HEADERS) $(MEMORY_HEADERS) $(SERVER_HEADERS) $(SRC_DIR)rshook.cpp
 	@mkdir -p $(OUT_EXE)
-	$(CPP) $(CPPFLAGS) -o $(OUT_EXE)rshook $(SERVER_OBJS) $(SRC_DIR)rshook.cpp -luring
+	$(CPP) $(CPPFLAGS) -o $(OUT_EXE)rshook $(COMMON_OBJS) $(SERVER_OBJS) $(SRC_DIR)rshook.cpp -luring
 
-$(OUT_OBJ)server.o: $(SERVER_HEADERS) $(SERVER_SOURCES)
+$(OUT_OBJ)server.o: $(COMMON_HEADERS) $(MEMORY_HEADERS) $(SERVER_HEADERS) $(SERVER_SOURCES)
 	@mkdir -p $(OUT_OBJ)
 	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)server.o -c $(SERVER_SOURCES)
+
+$(OUT_OBJ)alloc.o: $(COMMON_HEADERS) $(MEMORY_HEADERS) $(MEMORY_SOURCES)
+	@mkdir -p $(OUT_OBJ)
+	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)alloc.o -c $(MEMORY_SOURCES)
+
+$(OUT_OBJ)common.o: $(COMMON_HEADERS) $(COMMON_SOURCES)
+	@mkdir -p $(OUT_OBJ)
+	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)common.o -c $(COMMON_SOURCES)
 
 clean:
 	rm -rf $(OUT_EXE)* $(OUT_OBJ)*.o $(BIN_DIR)*

@@ -1,13 +1,8 @@
 #pragma once
 
-#include "common.h"
+#include "../common.h"
 
-#include <csignal>
-
-#include <unistd.h>
-
-#include <netinet/in.h>
-#include <liburing.h>
+#define SERVER_STRING "Server: Bosque RSHook\r\n"
 
 #define READ_BYTE_SIZE 8192
 
@@ -20,14 +15,6 @@
 #define EVENT_TYPE_ACCEPT 0
 #define EVENT_TYPE_READ   1
 #define EVENT_TYPE_WRITE  2
-
-struct request
-{
-    int event_type;
-    int iovec_count;
-    int client_socket;
-    struct iovec iov[];
-};
 
 void initialize(const char* static_files_root);
 
