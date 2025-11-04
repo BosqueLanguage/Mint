@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "DEFAULT_ROUTES"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "compilerArgs": [
+                "-Wall ",
+                "-Wextra ",
+                "-Wno-unused-parameter ",
+                "-Wuninitialized ",
+                "-Werror ",
+                "-std=gnu++20"
+            ]
+        }
+    ],
+    "version": 4
+}
