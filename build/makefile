@@ -33,9 +33,9 @@ COMMON_HEADERS=$(COMMON_DIR)common.h
 COMMON_SOURCES=$(COMMON_DIR)common.cpp
 COMMON_OBJS=$(OUT_OBJ)common.o
 
-SERVER_HEADERS=$(SERVER_DIR)server.h $(SERVER_DIR)alloc.h
-SERVER_SOURCES=$(SERVER_DIR)server.cpp $(SERVER_DIR)alloc.cpp
-SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)alloc.o
+SERVER_HEADERS=$(SERVER_DIR)server.h $(SERVER_DIR)filemgr.h $(SERVER_DIR)respond.h $(SERVER_DIR)fixedmsgs.h $(SERVER_DIR)alloc.h
+SERVER_SOURCES=$(SERVER_DIR)server.cpp $(SERVER_DIR)filemgr.cpp $(SERVER_DIR)respond.cpp $(SERVER_DIR)alloc.cpp
+SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)filemgr.o $(OUT_OBJ)respond.o $(OUT_OBJ)alloc.o
 
 JSON_INCLUDES=-I $(BUILD_DIR)include/json/
 
@@ -50,6 +50,14 @@ $(OUT_EXE)rshook: $(APPLICATION_OBJS) $(COMMON_OBJS) $(SERVER_OBJS) $(APPLICATIO
 $(OUT_OBJ)server.o: $(APPLICATION_HEADERS) $(COMMON_HEADERS) $(SERVER_HEADERS) $(SERVER_SOURCES)
 	@mkdir -p $(OUT_OBJ)
 	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)server.o -c $(SERVER_DIR)server.cpp
+
+$(OUT_OBJ)filemgr.o: $(COMMON_HEADERS) $(SERVER_HEADERS) $(SERVER_SOURCES)
+	@mkdir -p $(OUT_OBJ)
+	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)filemgr.o -c $(SERVER_DIR)filemgr.cpp
+
+$(OUT_OBJ)respond.o: $(COMMON_HEADERS) $(SERVER_HEADERS) $(SERVER_SOURCES)
+	@mkdir -p $(OUT_OBJ)
+	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)respond.o -c $(SERVER_DIR)respond.cpp
 
 $(OUT_OBJ)alloc.o: $(COMMON_HEADERS) $(SERVER_HEADERS) $(SERVER_SOURCES)
 	@mkdir -p $(OUT_OBJ)

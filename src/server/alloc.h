@@ -7,14 +7,7 @@
 
 constexpr size_t s_binidx(size_t size)
 {
-    size_t idx = 0;
-    size_t s = 1;
-    while (s < size && idx < 31)
-    {
-        s = s << 1;
-        idx++;
-    }
-    return idx;
+    return std::ceil(std::log2(size));
 }
 
 class ServerAllocator
@@ -49,7 +42,7 @@ public:
         this->m_allocs[bin] = ptr;
     }
 
-    constexpr uint8_t* allocate_bytes(size_t size)
+    uint8_t* allocatebytesp2(size_t size)
     {
         size_t bin = s_binidx(size);
 
@@ -62,5 +55,13 @@ public:
         }
 
         return (uint8_t*)res;
+    }
+
+    void freebytesp2(uint8_t* ptr, size_t size)
+    {
+        size_t bin = s_binidx(size);
+
+        FREE_LIST_SET_NEXT(ptr, this->m_allocs[bin]);
+        this->m_allocs[bin] = ptr;
     }
 };

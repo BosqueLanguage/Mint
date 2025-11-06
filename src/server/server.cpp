@@ -1,88 +1,11 @@
 #include "server.h"
 
 #include <csignal>
+#include <cstdio>
 
 #include <netinet/in.h>
-#include <liburing.h>
-
-struct request
-{
-    int event_type;
-    int iovec_count;
-    int client_socket;
-    struct iovec iov[];
-};
-
-//Since we can only have one outstanding accept at a time we pre-allocate its request structure
-struct request s_accept_req;
 
 struct io_uring ring;
-
-//The static root directory that we serve files from (needs to be fully qualified)
-char* static_rootdir = nullptr;
-size_t static_rootdir_len = 0;
-
-//For simplicity we initially assume a prefix for all static files -- others are assumed to be dynamic
-const char* static_prefix = "/static/";
-
-//The full path we will use to access files -- built from static_rootdir + request path
-char fullpath[PATH_MAX + 1];
-char normalizedpath[PATH_MAX + 1];
-
-char http_request[HTTP_MAX_REQUEST_SIZE];
-
-const char* unsupported_verb = \
-                                "HTTP/1.0 400 Bad Request\r\n"
-                                "Content-type: text/html\r\n"
-                                "\r\n"
-                                "<html>"
-                                "<head>"
-                                "<title>Unsupported Operation Type</title>"
-                                "</head>"
-                                "<body>"
-                                "<h1>Bad Request</h1>"
-                                "<p>REST Style hooks for Bosque services should be GET or POST</p>"
-                                "</body>"
-                                "</html>";
-
-
-const char* http_bad_request = \
-                                "HTTP/1.0 400 Bad Request\r\n"
-                                "Content-type: text/html\r\n"
-                                "\r\n"
-                                "<html>"
-                                "<head>"
-                                "<title>Bad Request</title>"
-                                "</head>"
-                                "<body>"
-                                "<h1>Bad Request (400)</h1>"
-                                "<p>Malformed or invalid request</p>"
-                                "</body>"
-                                "</html>";
-
-const char* http_404_static_content = \
-                                "HTTP/1.0 404 Not Found\r\n"
-                                "Content-type: text/html\r\n"
-                                "\r\n"
-                                "<html>"
-                                "<head>"
-                                "<title>Resource Not Found</title>"
-                                "</head>"
-                                "<body>"
-                                "<h1>Not Found (404)</h1>"
-                                "<p>Request for an unknown static resource</p>"
-                                "</body>"
-                                "</html>";
-
-void string_to_lower(char* str) {
-    if(str == nullptr) {
-        return;
-    }
-
-    for (int i = 0; str[i] != '\0'; i++) {
-        str[i] = tolower((unsigned char)str[i]);
-    }
-}
 
 int get_line(const char *src, char *dest, size_t dest_sz) {
     for (size_t i = 0; i < dest_sz; i++)
@@ -100,38 +23,26 @@ int get_line(const char *src, char *dest, size_t dest_sz) {
 void sigint_handler(int signo)
 {
     io_uring_queue_exit(&ring);
-    free(static_rootdir);
 
     printf("shutdown\n");
     exit(0);
 }
 
-void initialize(const char* static_files_root)
+bool setup_listening_socket(int port, int& sock)
 {
-    static_rootdir = realpath(static_files_root, nullptr);
-    if(static_rootdir == nullptr) {
-        static_rootdir_len = 0;
-    }
-    else {
-        static_rootdir_len = strlen(static_rootdir);
-    }
-    
     signal(SIGINT, sigint_handler);
     io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
-}
-
-std::optional<std::string> setup_listening_socket(int port, int& sock)
-{
+    
     struct sockaddr_in srv_addr;
 
     sock = socket(PF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
-        return std::optional<std::string>("Failed to create socket");
+        return false;
     }
 
     int enable = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-        return std::optional<std::string>("Failed to set socket options");
+        return false;
     }
 
     memset(&srv_addr, 0, sizeof(srv_addr));
@@ -140,29 +51,27 @@ std::optional<std::string> setup_listening_socket(int port, int& sock)
     srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (const struct sockaddr*)&srv_addr, sizeof(srv_addr)) < 0) {
-        return std::optional<std::string>("Failed to bind socket");
+        false;
     }
     
     if (listen(sock, 128) < 0) {
-        return std::optional<std::string>("Failed to listen on socket");
+        return false;
     }
 
-    return std::nullopt;
+    return true;
 }
 
-int add_accept_request(int server_socket, struct sockaddr_in *client_addr, socklen_t *client_addr_len)
+void add_accept_request(int server_socket, struct sockaddr_in *client_addr, socklen_t *client_addr_len)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    io_uring_prep_accept(sqe, server_socket, (struct sockaddr*)client_addr, client_addr_len, 0);
-
+    io_uring_prep_multishot_accept_direct(sqe, server_socket, (struct sockaddr*)client_addr, client_addr_len, 0);
+    xxxx;
     s_accept_req.event_type = EVENT_TYPE_ACCEPT;
     io_uring_sqe_set_data(sqe, &s_accept_req);
     io_uring_submit(&ring);
-
-    return 0;
 }
 
-int add_read_request(int client_socket)
+void add_read_request(int client_socket)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     struct request* req = (struct request*)malloc(sizeof(struct request) + sizeof(struct iovec));
@@ -175,10 +84,9 @@ int add_read_request(int client_socket)
     io_uring_prep_readv(sqe, client_socket, &req->iov[0], 1, 0);
     io_uring_sqe_set_data(sqe, req);
     io_uring_submit(&ring);
-    return 0;
 }
 
-int add_write_request(struct request *req)
+void add_write_request(struct request *req)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     req->event_type = EVENT_TYPE_WRITE;
@@ -186,7 +94,6 @@ int add_write_request(struct request *req)
     io_uring_prep_writev(sqe, req->client_socket, req->iov, req->iovec_count, 0);
     io_uring_sqe_set_data(sqe, req);
     io_uring_submit(&ring);
-    return 0;
 }
 
 //For responding with static error messages

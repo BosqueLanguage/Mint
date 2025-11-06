@@ -2,5 +2,8 @@
 
 void* ServerAllocator::m_allocatep2_slow(size_t size)
 {
-    xxxx;
+    /** 
+     * Temp using malloc for slow path until we implement custom backing allocation 
+     **/
+    return malloc(size);
 }
