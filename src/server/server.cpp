@@ -1,11 +1,6 @@
 #include "server.h"
 
-#include <csignal>
-#include <cstdio>
-
-#include <netinet/in.h>
-
-struct io_uring ring;
+#define QUEUE_DEPTH 256
 
 int get_line(const char *src, char *dest, size_t dest_sz) {
     for (size_t i = 0; i < dest_sz; i++)
@@ -20,55 +15,129 @@ int get_line(const char *src, char *dest, size_t dest_sz) {
     return 1;
 }
 
-void sigint_handler(int signo)
+void RSHookServer::write_user(struct user_request* req, size_t size, const char* data, bool should_release)
 {
-    io_uring_queue_exit(&ring);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
 
-    printf("shutdown\n");
-    exit(0);
+    struct io_client_write_event* evt = this->allocator.allocate<struct io_client_write_event>();
+    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE;
+    evt->base.req = req;
+    evt->size = size;
+    evt->msg_data = data;
+    evt->should_release = should_release;
+
+    io_uring_prep_write(sqe, req->client_socket, data, size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
 }
 
-bool setup_listening_socket(int port, int& sock)
+void RSHookServer::handle_error_code(struct user_request* req, RSErrorCode error_code)
 {
-    signal(SIGINT, sigint_handler);
-    io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
-    
-    struct sockaddr_in srv_addr;
-
-    sock = socket(PF_INET, SOCK_STREAM, 0);
-    if (sock == -1) {
-        return false;
+    switch(error_code) {
+    case RSErrorCode::MALFORMED_REQUEST:
+        this->send_static_content(req, MALFORMED_REQUEST_MSG);
+        break;
+    case RSErrorCode::UNSUPPORTED_VERB:
+        this->send_static_content(req, UNSUPPORTED_VERB_MSG);
+        break;
+    case RSErrorCode::ROUTE_NOT_FOUND:
+        this->send_static_content(req, CONTENT_404_MSG);
+        break;
+    default:
+        this->send_static_content(req, INTERNAL_SERVER_ERROR_MSG);
+        break;
     }
-
-    int enable = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-        return false;
-    }
-
-    memset(&srv_addr, 0, sizeof(srv_addr));
-    srv_addr.sin_family = AF_INET;
-    srv_addr.sin_port = htons(port);
-    srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(sock, (const struct sockaddr*)&srv_addr, sizeof(srv_addr)) < 0) {
-        false;
-    }
-    
-    if (listen(sock, 128) < 0) {
-        return false;
-    }
-
-    return true;
 }
 
-void add_accept_request(int server_socket, struct sockaddr_in *client_addr, socklen_t *client_addr_len)
+void RSHookServer::send_fstat(struct user_request* req, const char* file_path, bool memoize)
 {
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    io_uring_prep_multishot_accept_direct(sqe, server_socket, (struct sockaddr*)client_addr, client_addr_len, 0);
-    xxxx;
-    s_accept_req.event_type = EVENT_TYPE_ACCEPT;
-    io_uring_sqe_set_data(sqe, &s_accept_req);
-    io_uring_submit(&ring);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    struct io_file_stat_event* evt = this->allocator.allocate<struct io_file_stat_event>();
+    evt->base.io_event_type = RING_EVENT_IO_FILE_STAT;
+    evt->base.req = req;
+    evt->file_path = file_path;
+    evt->memoize = memoize;
+
+    io_uring_prep_statx(sqe, AT_FDCWD, file_path, AT_STATX_SYNC_AS_STAT, STATX_ALL, &evt->stat_buf);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::send_fopen(struct io_file_stat_event* req)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    struct io_file_open_event* evt = this->allocator.allocate<struct io_file_open_event>();
+    evt->base.io_event_type = RING_EVENT_IO_FILE_OPEN;
+    evt->base.req = req->base.req;
+    evt->file_path = req->file_path;
+    evt->stat_buf = req->stat_buf;
+    evt->file_fd = -1;
+    evt->memoize = req->memoize;
+
+    io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::send_read_file(struct io_file_open_event* req)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    struct io_file_read_event* evt = this->allocator.allocate<struct io_file_read_event>();
+    evt->base.io_event_type = RING_EVENT_IO_FILE_READ;
+    evt->base.req = req->base.req;
+    evt->file_path = req->file_path;
+    evt->file_fd = req->file_fd;
+
+    evt->size = req->stat_buf.stx_size;
+    evt->file_data = (char*)this->allocator.allocatebytesp2(req->stat_buf.stx_size);
+
+    io_uring_prep_read(sqe, req->file_fd, (void*)evt->file_data, evt->size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0), ring()
+{
+    ;
+}
+
+RSHookServer::~RSHookServer()
+{
+    ;
+}
+
+void RSHookServer::startup(int port, int server_socket)
+{
+    this->port = port;
+    this->server_socket = server_socket;
+
+    io_uring_queue_init(QUEUE_DEPTH, &this->ring, 0);
+}
+
+void RSHookServer::shutdown()
+{
+    //TODO: need to gracefully stop accepting new connections and wait for existing ones to finish then exit
+
+    io_uring_queue_exit(&this->ring);
+
+    this->file_cache_mgr.clear(this->allocator);
+}
+
+void RSHookServer::runloop()
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+    io_uring_prep_multishot_accept(sqe, this->server_socket, nullptr, nullptr, 0);
+
+    io_uring_sqe_set_data64(sqe, RING_EVENT_TYPE_ACCEPT);
+    io_uring_submit(&this->ring);
+
+    while(1) {
+
+    }
 }
 
 void add_read_request(int client_socket)
@@ -96,33 +165,6 @@ void add_write_request(struct request *req)
     io_uring_submit(&ring);
 }
 
-//For responding with static error messages
-void _send_static_string_content(const char *str, int client_socket) 
-{
-    struct request* req = (struct request*)malloc(sizeof(struct request) + sizeof(struct iovec));
-    size_t slen = strlen(str);
-    req->iovec_count = 1;
-    req->client_socket = client_socket;
-    req->iov[0].iov_base = malloc(slen);
-    req->iov[0].iov_len = slen;
-    memcpy(req->iov[0].iov_base, str, slen);
-    add_write_request(req);
-}
-
-void handle_unimplemented_method(int client_socket) 
-{
-    _send_static_string_content(unsupported_verb, client_socket);
-}
-
-void handle_http_404(int client_socket) 
-{
-    _send_static_string_content(http_404_static_content, client_socket);
-}
-
-void handle_http_400(int client_socket) 
-{
-    _send_static_string_content(http_bad_request, client_socket);
-}
 
 std::optional<char*> copy_file_contents(const char* file_path, off_t file_size)
 {

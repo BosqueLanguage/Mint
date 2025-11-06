@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../common.h"
+#include "common.h"
 
 #define FREE_LIST_GET_NEXT(L) (*(void**)(L))
 #define FREE_LIST_SET_NEXT(L, P) ((*(void**)(L)) = P)

@@ -6,11 +6,11 @@
                 "${workspaceFolder}/**"
             ],
             "defines": [
-                "DEFAULT_ROUTES"
+                "SAMPLE_SERVER_APP"
             ],
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "c17",
-            "cppStandard": "gnu++17",
+            "cppStandard": "gnu++20",
             "intelliSenseMode": "linux-gcc-x64",
             "compilerArgs": [
                 "-Wall ",
