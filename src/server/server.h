@@ -10,16 +10,17 @@
 
 #include <liburing.h>
 
-
 #define RING_EVENT_TYPE_IO 0x0
 #define RING_EVENT_TYPE_ACCEPT 0x1
 
 #define RING_EVENT_IO_FILE_STAT 0x1
 #define RING_EVENT_IO_FILE_OPEN 0x2
 #define RING_EVENT_IO_FILE_READ 0x3
+#define RING_EVENT_IO_FILE_CLOSE 0x4
 
-#define RING_EVENT_IO_CLIENT_READ 0x2
-#define RING_EVENT_IO_CLIENT_WRITE 0x3
+#define RING_EVENT_IO_CLIENT_READ 0x10
+#define RING_EVENT_IO_CLIENT_WRITE 0x20
+#define RING_EVENT_IO_CLIENT_WRITE_VECTORED 0x30
 
 /**
  * Data structure representing the input to a route handler as extracted from the HTTP request
@@ -73,6 +74,13 @@ struct io_file_read_event
     bool memoize;
 };
 
+struct io_file_close_event
+{
+    struct io_event base;
+
+    const char* file_path;
+};
+
 struct io_client_read_event
 {
     struct io_event base;
@@ -87,8 +95,14 @@ struct io_client_write_event
 
     size_t size;
     const char* msg_data;
+};
 
-    bool should_release;
+struct io_client_write_event_vectored
+{
+    struct io_event base;
+
+    struct iovec iov[2];
+    int32_t iov_sizes[2]; //-1 if we should not free the corresponding iovec entry
 };
 
 union event {
@@ -108,11 +122,6 @@ enum class RSErrorCode
     INTERNAL_SERVER_ERROR
 };
 
-/** 
- * Callback function type for route handlers that compute a result of some (opaque) type -- nullptr if the call failed
- **/
-typedef void (*RouteCB)(io_client_read_event* input, void* result);
-
 class RSHookServer
 {
 private:
@@ -126,18 +135,16 @@ private:
     ServerAllocator allocator;
     FileCacheManager file_cache_mgr;
 
-    void write_user(struct user_request* req, size_t size, const char* data, bool should_release);
+    void write_user_direct(struct user_request* req, size_t size, const char* data);
+    void write_user_file_contents(struct user_request* req, size_t size, const char* data, bool should_release);
+    void write_user_dynamic_response(struct user_request* req, size_t size, const char* data);
 
     void send_static_content(struct user_request* req, const char* str) {
-        this->write_user(req, strlen(str), str, false);
+        this->write_user_direct(req, strlen(str), str);
     }
 
     void send_cache_file_content(struct user_request* req, const char* path, size_t size, const char* data) {
-        this->write_user(req, size, data, false);
-    }
-
-    void send_dynamic_content(struct user_request* req, size_t size, const char* data) {
-        this->write_user(req, size, data, true);
+        this->write_user_direct(req, size, data);
     }
 
     void handle_error_code(struct user_request* req, RSErrorCode error_code);
@@ -145,6 +152,7 @@ private:
     void send_fstat(struct user_request* req, const char* file_path, bool memoize);
     void send_fopen(struct io_file_stat_event* req);
     void send_read_file(struct io_file_open_event* req);
+    void send_close_file(struct io_file_read_event* req);
 
 public:
     RSHookServer();

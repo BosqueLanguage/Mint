@@ -1,21 +1,67 @@
 #include "server.h"
 
+#define HEADER_BUFFER_MAX 512
 #define QUEUE_DEPTH 256
 
-int get_line(const char *src, char *dest, size_t dest_sz) {
-    for (size_t i = 0; i < dest_sz; i++)
-    {
-        dest[i] = src[i];
-        if (src[i] == '\r' && src[i + 1] == '\n')
-        {
-            dest[i] = '\0';
-            return 0;
-        }
+#if ENABLE_CONSOLE_STATUS
+#define CONSOLE_STATUS_PRINT(...) printf(__VA_ARGS__)
+#else
+#define CONSOLE_STATUS_PRINT(...)
+#endif
+
+#if ENABLE_CONSOLE_LOGGING
+#define CONSOLE_LOG_PRINT(...) printf(__VA_ARGS__)
+#else
+#define CONSOLE_LOG_PRINT(...)
+#endif
+
+const char* get_header_content_type(const char* path)
+{
+    const char* file_ext = get_filename_ext(path);
+    if (strcmp("jpg", file_ext) == 0) {
+        return "Content-Type: image/jpeg\r\n";
     }
-    return 1;
+    else if (strcmp("jpeg", file_ext) == 0) {
+        return "Content-Type: image/jpeg\r\n";
+    }
+    else if (strcmp("png", file_ext) == 0) {
+        return "Content-Type: image/png\r\n";
+    }
+    else if (strcmp("gif", file_ext) == 0) {
+        return "Content-Type: image/gif\r\n";
+    }
+    else if (strcmp("html", file_ext) == 0) {
+        return "Content-Type: text/html\r\n";
+    }
+    else if (strcmp("js", file_ext) == 0) {
+        return "Content-Type: application/javascript\r\n";
+    }
+    else if (strcmp("css", file_ext) == 0) {
+        return "Content-Type: text/css\r\n";
+    }
+    else if (strcmp("txt", file_ext) == 0) {
+        return "Content-Type: text/plain\r\n";
+    }
+    else if (strcmp("json", file_ext) == 0) {
+        return "Content-Type: application/json\r\n";
+    }
+    else {
+        return "Content-Type: application/octet-stream\r\n";
+    }
 }
 
-void RSHookServer::write_user(struct user_request* req, size_t size, const char* data, bool should_release)
+int build_dynamic_headers(size_t contents_size, char* send_buffer)
+{
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: application/json\r\ncontent-length: %ld\r\n\r\n", SERVER_STRING, contents_size);
+}
+
+int build_file_headers(const char* path, size_t contents_size, char* send_buffer)
+{
+    const char* ftype = get_header_content_type(path);
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: %s\r\ncontent-length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
+}
+
+void RSHookServer::write_user_direct(struct user_request* req, size_t size, const char* data)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
 
@@ -24,9 +70,60 @@ void RSHookServer::write_user(struct user_request* req, size_t size, const char*
     evt->base.req = req;
     evt->size = size;
     evt->msg_data = data;
-    evt->should_release = should_release;
 
     io_uring_prep_write(sqe, req->client_socket, data, size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::write_user_file_contents(struct user_request* req, size_t size, const char* data, bool should_release)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+
+    struct io_client_write_event_vectored* evt = this->allocator.allocate<struct io_client_write_event_vectored>();
+    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE_VECTORED;
+    evt->base.req = req;
+
+    //Set the headers as the first iovec entry
+    void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, (char*)header);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_sizes[0] = header_len;
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (void*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_sizes[1] = should_release ? (int32_t)size : -1;
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::write_user_dynamic_response(struct user_request* req, size_t size, const char* data)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+
+    struct io_client_write_event_vectored* evt = this->allocator.allocate<struct io_client_write_event_vectored>();
+    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE_VECTORED;
+    evt->base.req = req;
+
+    //Set the headers as the first iovec entry
+    void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, (char*)header);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_sizes[0] = header_len;
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (void*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_sizes[1] = (int32_t)size;
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
@@ -100,6 +197,21 @@ void RSHookServer::send_read_file(struct io_file_open_event* req)
     this->submission_count++; //track number of submissions for batching
 }
 
+
+void RSHookServer::send_close_file(struct io_file_read_event* req)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    struct io_file_close_event* evt = this->allocator.allocate<struct io_file_close_event>();
+    evt->base.io_event_type = RING_EVENT_IO_FILE_CLOSE;
+    evt->base.req = req->base.req;
+    evt->file_path = req->file_path;
+
+    io_uring_prep_close(sqe, req->file_fd);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
 RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0), ring()
 {
     ;
@@ -120,203 +232,99 @@ void RSHookServer::startup(int port, int server_socket)
 
 void RSHookServer::shutdown()
 {
+    CONSOLE_STATUS_PRINT("Shutting down server...\n");
     //TODO: need to gracefully stop accepting new connections and wait for existing ones to finish then exit
 
     io_uring_queue_exit(&this->ring);
 
     this->file_cache_mgr.clear(this->allocator);
+
+    CONSOLE_STATUS_PRINT("Server shutdown complete.\n");
 }
 
 void RSHookServer::runloop()
 {
+    CONSOLE_STATUS_PRINT("Server starting...\n");
+
     struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
     io_uring_prep_multishot_accept(sqe, this->server_socket, nullptr, nullptr, 0);
 
     io_uring_sqe_set_data64(sqe, RING_EVENT_TYPE_ACCEPT);
     io_uring_submit(&this->ring);
 
-    while(1) {
+    CONSOLE_STATUS_PRINT("Server listening...\n");
 
-    }
-}
-
-void add_read_request(int client_socket)
-{
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    struct request* req = (struct request*)malloc(sizeof(struct request) + sizeof(struct iovec));
-    req->iov[0].iov_base = malloc(READ_BYTE_SIZE);
-    req->iov[0].iov_len = READ_BYTE_SIZE;
-    req->event_type = EVENT_TYPE_READ;
-    req->client_socket = client_socket;
-    memset(req->iov[0].iov_base, 0, READ_BYTE_SIZE);
-
-    io_uring_prep_readv(sqe, client_socket, &req->iov[0], 1, 0);
-    io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(&ring);
-}
-
-void add_write_request(struct request *req)
-{
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    req->event_type = EVENT_TYPE_WRITE;
-
-    io_uring_prep_writev(sqe, req->client_socket, req->iov, req->iovec_count, 0);
-    io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(&ring);
-}
-
-
-std::optional<char*> copy_file_contents(const char* file_path, off_t file_size)
-{
-    //TODO: cache files here to avoid repeated reads
-
-    int fd = open(file_path, O_RDONLY);
-    if (fd < 0) {
-        return std::nullopt;
-    }
-
-    char* buf = (char*)malloc(file_size);
-    int ret = read(fd, buf, file_size);
-    if (ret < file_size)
-    {
-        free(buf);
-        return std::nullopt;
-    }
-    close(fd);
-
-    return buf;
-}
-
-const char* get_filename_ext(const char* filename)
-{
-    const char* dot = strrchr(filename, '.');
-    if (!dot || dot == filename) {
-        return "";
-    }
-    else {
-        return dot + 1;
-    }
-}
-
-void send_headers(const char* path, off_t len, struct iovec *iov)
-{
-    size_t slen;
-    char send_buffer[256];
-
-    const char *str = "HTTP/1.0 200 OK\r\n";
-    slen = strlen(str);
-    iov[0].iov_base = malloc(slen);
-    iov[0].iov_len = slen;
-    memcpy(iov[0].iov_base, str, slen);
-
-    slen = strlen(SERVER_STRING);
-    iov[1].iov_base = malloc(slen);
-    iov[1].iov_len = slen;
-    memcpy(iov[1].iov_base, SERVER_STRING, slen);
-
-    const char* file_ext = get_filename_ext(path);
-    if (strcmp("jpg", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: image/jpeg\r\n");
-    }
-    else if (strcmp("jpeg", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: image/jpeg\r\n");
-    }
-    else if (strcmp("png", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: image/png\r\n");
-    }
-    else if (strcmp("gif", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: image/gif\r\n");
-    }
-    else if (strcmp("html", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: text/html\r\n");
-    }
-    else if (strcmp("js", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: application/javascript\r\n");
-    }
-    else if (strcmp("css", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: text/css\r\n");
-    }
-    else if (strcmp("txt", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: text/plain\r\n");
-    }
-    else if (strcmp("json", file_ext) == 0) {
-        strcpy(send_buffer, "Content-Type: application/json\r\n");
-    }
-    else {
-        strcpy(send_buffer, "Content-Type: application/octet-stream\r\n");
-    }
-    
-    slen = strlen(send_buffer);
-    iov[2].iov_base = malloc(slen);
-    iov[2].iov_len = slen;
-    memcpy(iov[2].iov_base, send_buffer, slen);
-
-    /* Send the content-length header, which is the file size in this case. */
-    sprintf(send_buffer, "content-length: %ld\r\n", len);
-    slen = strlen(send_buffer);
-    iov[3].iov_base = malloc(slen);
-    iov[3].iov_len = slen;
-    memcpy(iov[3].iov_base, send_buffer, slen);
-
-    /*
-     * When the browser sees a '\r\n' sequence in a line on its own,
-     * it understands there are no more headers. Content may follow.
-     * */
-    strcpy(send_buffer, "\r\n");
-    slen = strlen(send_buffer);
-    iov[4].iov_base = malloc(slen);
-    iov[4].iov_len = slen;
-    memcpy(iov[4].iov_base, send_buffer, slen);
-}
-
-void handle_get_file_method(const char* path, int client_socket)
-{
-    if (static_rootdir_len + strlen(path) > PATH_MAX)
-    {
-        handle_http_404(client_socket);
-        return;
-    }
-
-    strcpy(fullpath, static_rootdir);
-    strcpy(fullpath + static_rootdir_len, path + (strlen(static_prefix) - 1)); //Skip the static prefix but leave the /
-
-    char* npath = realpath(fullpath, normalizedpath);
-    if(npath == nullptr || strncmp(npath, static_rootdir, static_rootdir_len) != 0) //Make sure we are not escaping the root dir
-    {
-        handle_http_404(client_socket);
-        return;
-    }
-
-    struct stat path_stat;
-    if (stat(npath, &path_stat) == -1)
-    {
-        handle_http_404(client_socket);
-    }
-    else
-    {
-        /* Check if this is a normal/regular file and not a directory or something else */
-        if (!S_ISREG(path_stat.st_mode))
-        {
-            handle_http_404(client_socket);
-            return;
-        }
-
-        std::optional<char*> data = copy_file_contents(npath, path_stat.st_size);
-        if(!data.has_value())
-        {
-            handle_http_404(client_socket);
-            return;
-        }
-
-        struct request* req = (struct request*)malloc(sizeof(struct request) + (sizeof(struct iovec) * 6));
-        req->iovec_count = 6;
-        req->client_socket = client_socket;
-        send_headers(npath, path_stat.st_size, req->iov);
+    while (1) {
+        assert(this->submission_count == 0);
         
-        req->iov[5].iov_base = data.value();
-        req->iov[5].iov_len = path_stat.st_size;
+        struct io_uring_cqe* cqe;
+        int ret = io_uring_wait_cqe(&this->ring, &cqe);
+        if (ret < 0) {
+            CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
+            assert(false);
+        }
 
-        add_write_request(req);
+        if (cqe->res < 0) {
+            CONSOLE_LOG_PRINT("Fatal error in CQE: %s\n", strerror(-cqe->res));
+            assert(false);
+        }
+
+        while(1) {
+            if((cqe->user_data & RING_EVENT_TYPE_ACCEPT) == RING_EVENT_TYPE_ACCEPT) {
+                struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+
+                io_uring_prep_read(sqe, cqe->res, xxxx);
+                io_uring_sqe_set_data(sqe, evt);
+
+                this->submission_count++; //track number of submissions for batching
+
+            }
+            else {
+
+            switch (req->type) {
+        case ACCEPT:
+            add_accept_request(listen_socket,
+                              &client_addr, &client_addr_len);
+            add_read_request(cqe->res);
+            submissions += 2;
+            break;
+        case READ:
+            if (cqe->res <= 0) {
+                add_close_request(req);
+                submissions += 1;
+            } else {
+                add_write_request(req);
+                add_read_request(req->socket);
+                submissions += 2;
+            }
+            break;
+        case WRITE:
+          break;
+        case CLOSE:
+            free_request(req);
+            break;
+        default:
+            fprintf(stderr, "Unexpected req type %d\n", req->type);
+            break;
+        }
+    }
+
+        io_uring_cqe_seen(&ring, cqe);
+
+        if (io_uring_sq_space_left(&ring) < MAX_SQE_PER_LOOP) {
+            break;     // the submission queue is full
+        }
+
+        ret = io_uring_peek_cqe(&ring, &cqe);
+        if (ret == -EAGAIN) {
+            break;     // no remaining work in completion queue
+        }
+    }
+
+        if (this->submission_count > 0) {
+            io_uring_submit(&this->ring);
+            this->submission_count = 0;
+        }
     }
 }
 
@@ -342,16 +350,6 @@ void handle_http_method(char* method_buffer, int client_socket) {
     else
     {
         handle_unimplemented_method(client_socket);
-    }
-}
-
-void handle_client_request(struct request* req)
-{
-    if (get_line((const char*) req->iov[0].iov_base, http_request, sizeof(http_request))) {
-        handle_http_400(req->client_socket);
-    }
-    else {
-        handle_http_method(http_request, req->client_socket);
     }
 }
 

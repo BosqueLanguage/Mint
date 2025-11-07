@@ -9,8 +9,6 @@ RSHookServer g_server;
 void sigint_handler(int signo)
 {
     g_server.shutdown();
-
-    printf("shutdown\n");
     exit(0);
 }
 
