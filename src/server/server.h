@@ -162,7 +162,7 @@ private:
     void process_user_request(struct io_user_request_event* event);
 
     //TODO: process a user action request
-    void process_http_file_access(struct io_event* event, const char* file_path, bool memoize);
+    void process_http_file_access(struct user_request* req, const char* file_path, bool memoize);
 
     void process_fstat_result(struct io_file_stat_event* event);
     void process_fopen_result(struct io_file_open_event* event);

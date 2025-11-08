@@ -162,16 +162,45 @@ void RSHookServer::process_user_connect(int listen_socket)
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_http_file_access(struct io_event* event, const char* file_path, bool memoize)
+void RSHookServer::process_user_request(struct io_user_request_event* event)
+{
+    char* saveptr = nullptr;
+
+    const char* method = strtok_r(event->http_request_data, " ", &saveptr);
+    const char* path = strtok_r(NULL, " ", &saveptr);
+
+    if (strcmp(method, "get") == 0)
+    {
+        if(strcmp(path, "/sample.json") == 0)
+        {
+            //TODO: better base lookup
+            const char* fpath = (const char*)this->allocator.allocatebytesp2(strlen("/home/mark/Code/RSHook/build/static") + strlen("/sample.json") + 1);
+            sprintf((char*)fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
+
+            this->process_http_file_access(event->base.req, fpath, true);
+        }
+        else
+        {
+            //TODO: we plan to add dynamic handling here later
+            handle_error_code(event->base.req, RSErrorCode::ROUTE_NOT_FOUND);
+            this->allocator.freep2<struct io_user_request_event>(event);
+        }
+    }
+    else
+    {
+        handle_error_code(event->base.req, RSErrorCode::UNSUPPORTED_VERB);
+        this->allocator.freep2<struct io_user_request_event>(event);
+    }
+}
+
+void RSHookServer::process_http_file_access(struct user_request* req, const char* file_path, bool memoize)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
     struct io_file_stat_event* evt = this->allocator.allocate<struct io_file_stat_event>();
     evt->base.io_event_type = RING_EVENT_IO_FILE_STAT;
-    evt->base.req = event->req;
+    evt->base.req = req;
     evt->file_path = file_path;
     evt->memoize = memoize;
-
-    this->allocator.freep2<struct io_event>(event);
 
     io_uring_prep_statx(sqe, AT_FDCWD, file_path, AT_STATX_SYNC_AS_STAT, STATX_ALL, &evt->stat_buf);
     io_uring_sqe_set_data(sqe, evt);
@@ -328,11 +357,6 @@ void RSHookServer::runloop()
             assert(false);
         }
 
-        if (cqe->res < 0) {
-            CONSOLE_LOG_PRINT("Fatal error in CQE: %s\n", strerror(-cqe->res));
-            assert(false);
-        }
-
         while(1) {
             if((cqe->user_data & RING_EVENT_TYPE_ACCEPT) == RING_EVENT_TYPE_ACCEPT) {
                 this->process_user_connect(cqe->res);
@@ -343,37 +367,80 @@ void RSHookServer::runloop()
                 switch (event->io_event_type) {
                     case RING_EVENT_IO_CLIENT_READ: {
                         CONSOLE_LOG_PRINT("Handling client read event -- %x\n", event->req->client_socket);
-                        this->process_user_request((struct io_user_request_event*)event);
+
+                        struct io_user_request_event* eevt = (struct io_user_request_event*)event;
+                        if (cqe->res >= 0) {
+                            this->process_user_request(eevt);
+                        }
+                        else {
+                            handle_error_code(eevt->base.req, RSErrorCode::MALFORMED_REQUEST);
+                            this->allocator.freep2<struct io_user_request_event>(eevt);  
+                        }
                         break;
                     }
                     case RING_EVENT_IO_CLIENT_WRITE: {
                         CONSOLE_LOG_PRINT("Handling file write event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
                         this->cleanup_after_write((struct io_client_write_event*)event);
                         break;
                     }
                     case RING_EVENT_IO_CLIENT_WRITE_VECTORED: {
                         CONSOLE_LOG_PRINT("Handling vectored write event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
                         this->cleanup_after_write_vectored((struct io_client_write_event_vectored*)event);
                         break;
                     }
                     case RING_EVENT_IO_FILE_STAT: {
                         CONSOLE_LOG_PRINT("Handling file stat event -- %x %s\n", event->req->client_socket, event->req->route);
-                        this->process_fstat_result((struct io_file_stat_event*)event);
+                        
+                        struct io_file_stat_event* eevt = (struct io_file_stat_event*)event;
+                        if (cqe->res >= 0) {
+                            this->process_fstat_result(eevt);
+                        }
+                        else {
+                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(eevt->base.req, RSErrorCode::MALFORMED_REQUEST);
+                            this->allocator.freep2<struct io_file_stat_event>(eevt);  
+                        }
                         break;
                     }
                     case RING_EVENT_IO_FILE_OPEN: {
                         CONSOLE_LOG_PRINT("Handling file open event -- %x %s\n", event->req->client_socket, event->req->route);
-                        this->process_fopen_result((struct io_file_open_event*)event);
+                        
+                        if (cqe->res >= 0) {
+                            this->process_fopen_result((struct io_file_open_event*)event);
+                        }
+                        else {
+                            CONSOLE_LOG_PRINT("Error opening file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
                         break;
                     }
                     case RING_EVENT_IO_FILE_READ: {
                         CONSOLE_LOG_PRINT("Handling file read event -- %x %s\n", event->req->client_socket, event->req->route);
-                        this->process_fread_result((struct io_file_read_event*)event);
+                        
+                        if (cqe->res >= 0) {
+                            this->process_fread_result((struct io_file_read_event*)event);
+                        }
+                        else {
+                            CONSOLE_LOG_PRINT("Error reading file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
                         break;
                     }
                     case RING_EVENT_IO_FILE_CLOSE: {
                         CONSOLE_LOG_PRINT("Handling file close event -- %x %s\n", event->req->client_socket, event->req->route);
-                        this->process_fclose_result((struct io_file_close_event*)event);
+                        
+                        if (cqe->res >= 0) {
+                            this->process_fclose_result((struct io_file_close_event*)event);
+                        }
+                        else {
+                            CONSOLE_LOG_PRINT("Error closing file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
                         break;
                     }
                     default: {
@@ -395,12 +462,7 @@ void RSHookServer::runloop()
             }
 
             if (ret < 0) {
-               CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
-                assert(false);
-            }
-
-            if (cqe->res < 0) {
-                CONSOLE_LOG_PRINT("Fatal error in CQE: %s\n", strerror(-cqe->res));
+                CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
                 assert(false);
             }
         }
@@ -411,29 +473,3 @@ void RSHookServer::runloop()
         }
     }
 }
-
-void handle_http_method(char* method_buffer, int client_socket) {
-    char* saveptr = nullptr;
-
-    const char* method = strtok_r(method_buffer, " ", &saveptr);
-    const char* path = strtok_r(NULL, " ", &saveptr);
-
-    string_to_lower((char*)method);
-    if (strcmp(method, "get") == 0)
-    {
-        if(strncmp(path, static_prefix, strlen(static_prefix)) == 0)
-        {
-            handle_get_file_method(path, client_socket);
-        }
-        else
-        {
-            //TODO: we plan to add dynamic handling here later
-            handle_unimplemented_method(client_socket);
-        }
-    }
-    else
-    {
-        handle_unimplemented_method(client_socket);
-    }
-}
-
