@@ -22,6 +22,8 @@
 #define RING_EVENT_IO_CLIENT_WRITE 0x20
 #define RING_EVENT_IO_CLIENT_WRITE_VECTORED 0x30
 
+#define HTTP_MAX_REQUEST_BUFFER_SIZE 16384
+
 /**
  * Data structure representing the input to a route handler as extracted from the HTTP request
  **/
@@ -38,6 +40,13 @@ struct io_event
 {
     int32_t io_event_type;
     struct user_request* req;
+};
+
+struct io_user_request_event
+{
+    struct io_event base;
+
+    char* http_request_data;
 };
 
 struct io_file_stat_event
@@ -144,15 +153,25 @@ private:
     }
 
     void send_cache_file_content(struct user_request* req, const char* path, size_t size, const char* data) {
-        this->write_user_direct(req, size, data);
+        this->write_user_file_contents(req, size, data, false);
     }
 
     void handle_error_code(struct user_request* req, RSErrorCode error_code);
 
-    void send_fstat(struct user_request* req, const char* file_path, bool memoize);
-    void send_fopen(struct io_file_stat_event* req);
-    void send_read_file(struct io_file_open_event* req);
-    void send_close_file(struct io_file_read_event* req);
+    void process_user_connect(int listen_socket);
+    void process_user_request(struct io_user_request_event* event);
+
+    //TODO: process a user action request
+    void process_http_file_access(struct io_event* event, const char* file_path, bool memoize);
+
+    void process_fstat_result(struct io_file_stat_event* event);
+    void process_fopen_result(struct io_file_open_event* event);
+    void process_fread_result(struct io_file_read_event* event);
+    void process_fclose_result(struct io_file_close_event* event);
+
+    void cleanup_user_request(struct user_request* req);
+    void cleanup_after_write(struct io_client_write_event* event);
+    void cleanup_after_write_vectored(struct io_client_write_event_vectored* event);
 
 public:
     RSHookServer();
