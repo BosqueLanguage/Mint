@@ -32,7 +32,7 @@ bool setup_listening_socket(int port, int& sock)
     srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (const struct sockaddr*)&srv_addr, sizeof(srv_addr)) < 0) {
-        false;
+        return false;
     }
     
     if (listen(sock, 128) < 0) {

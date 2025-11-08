@@ -30,7 +30,7 @@ public:
             res = this->m_allocatep2_slow(sizeof(T));
         }
 
-        return res;
+        return (T*)res;
     }
 
     template<typename T>

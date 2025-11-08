@@ -305,7 +305,7 @@ void RSHookServer::cleanup_after_write_vectored(struct io_client_write_event_vec
     this->allocator.freep2<struct io_client_write_event_vectored>(event);
 }
 
-RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0), ring()
+RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0)
 {
     ;
 }

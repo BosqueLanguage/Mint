@@ -7,7 +7,6 @@ OUT_EXE=$(BUILD_DIR)output/
 OUT_OBJ=$(BUILD_DIR)output/obj/
 
 APPLICATION_DIR=$(SRC_DIR)application/
-COMMON_DIR=$(SRC_DIR)
 SERVER_DIR=$(SRC_DIR)server/
 
 RSHOOK_TEST_DIR=$(MAKE_PATH)/../test/
@@ -28,7 +27,7 @@ APPLICATION_FLAGS=-DSAMPLE_SERVER_APP
 
 SERVER_HEADERS=$(SERVER_DIR)server.h $(SERVER_DIR)filemgr.h $(SERVER_DIR)fixedmsgs.h $(SERVER_DIR)alloc.h $(SERVER_DIR)common.h
 SERVER_SOURCES=$(SERVER_DIR)server.cpp $(SERVER_DIR)alloc.cpp $(SERVER_DIR)common.cpp
-SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)filemgr.o $(OUT_OBJ)alloc.o $(OUT_OBJ)common.o
+SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)alloc.o $(OUT_OBJ)common.o
 
 JSON_INCLUDES=-I $(BUILD_DIR)include/json/
 
@@ -48,9 +47,9 @@ $(OUT_OBJ)alloc.o: $(SERVER_HEADERS) $(SERVER_DIR)alloc.cpp
 	@mkdir -p $(OUT_OBJ)
 	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)alloc.o -c $(SERVER_DIR)alloc.cpp
 
-$(OUT_OBJ)common.o: $(SERVER_HEADERS) $(COMMON_DIR)common.cpp
+$(OUT_OBJ)common.o: $(SERVER_HEADERS) $(SERVER_DIR)common.cpp
 	@mkdir -p $(OUT_OBJ)
-	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)common.o -c $(COMMON_DIR)common.cpp
+	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)common.o -c $(SERVER_DIR)common.cpp
 
 clean:
 	rm -rf $(OUT_EXE)* $(OUT_OBJ)*.o $(BIN_DIR)*
