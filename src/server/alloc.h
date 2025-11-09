@@ -59,6 +59,10 @@ public:
 
     void freebytesp2(uint8_t* ptr, size_t size)
     {
+        if(ptr == nullptr) {
+            return;
+        }
+        
         size_t bin = s_binidx(size);
 
         FREE_LIST_SET_NEXT(ptr, this->m_allocs[bin]);

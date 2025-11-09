@@ -25,7 +25,7 @@ CPPFLAGS_TEST=${CPPFLAGS_OPT.dev} ${CPP_STDFLAGS}
 
 APPLICATION_FLAGS=-DSAMPLE_SERVER_APP
 
-SERVER_HEADERS=$(SERVER_DIR)server.h $(SERVER_DIR)filemgr.h $(SERVER_DIR)fixedmsgs.h $(SERVER_DIR)alloc.h $(SERVER_DIR)common.h
+SERVER_HEADERS=$(SERVER_DIR)server.h $(SERVER_DIR)events.h $(SERVER_DIR)filemgr.h $(SERVER_DIR)fixedmsgs.h $(SERVER_DIR)alloc.h $(SERVER_DIR)common.h
 SERVER_SOURCES=$(SERVER_DIR)server.cpp $(SERVER_DIR)alloc.cpp $(SERVER_DIR)common.cpp
 SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)alloc.o $(OUT_OBJ)common.o
 
