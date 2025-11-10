@@ -61,15 +61,10 @@ int build_file_headers(const char* path, size_t contents_size, char* send_buffer
     return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: %s\r\ncontent-length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
 }
 
-void RSHookServer::write_user_direct(struct user_request* req, size_t size, const char* data)
+void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* data)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-
-    struct io_client_write_event* evt = this->allocator.allocate<struct io_client_write_event>();
-    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE;
-    evt->base.req = req;
-    evt->size = size;
-    evt->msg_data = data;
+    IOClientWriteEvent* evt = IOClientWriteEvent::create(this->allocator, req, size, data);
 
     io_uring_prep_write(sqe, req->client_socket, data, size, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -77,13 +72,10 @@ void RSHookServer::write_user_direct(struct user_request* req, size_t size, cons
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::write_user_file_contents(struct user_request* req, size_t size, const char* data, bool should_release)
+void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-
-    struct io_client_write_event_vectored* evt = this->allocator.allocate<struct io_client_write_event_vectored>();
-    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE_VECTORED;
-    evt->base.req = req;
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
     //Set the headers as the first iovec entry
     void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
@@ -103,13 +95,10 @@ void RSHookServer::write_user_file_contents(struct user_request* req, size_t siz
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::write_user_dynamic_response(struct user_request* req, size_t size, const char* data)
+void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, const char* data)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-
-    struct io_client_write_event_vectored* evt = this->allocator.allocate<struct io_client_write_event_vectored>();
-    evt->base.io_event_type = RING_EVENT_IO_CLIENT_WRITE_VECTORED;
-    evt->base.req = req;
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
     //Set the headers as the first iovec entry
     void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
@@ -129,20 +118,22 @@ void RSHookServer::write_user_dynamic_response(struct user_request* req, size_t 
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::handle_error_code(struct user_request* req, RSErrorCode error_code)
+void RSHookServer::handle_error_code(UserRequest* req, RSErrorCode error_code)
 {
+    UserRequest* req_clone = req->clone(this->allocator);
+
     switch(error_code) {
     case RSErrorCode::MALFORMED_REQUEST:
-        this->send_static_content(req, MALFORMED_REQUEST_MSG);
+        this->send_static_content(req_clone, MALFORMED_REQUEST_MSG);
         break;
     case RSErrorCode::UNSUPPORTED_VERB:
-        this->send_static_content(req, UNSUPPORTED_VERB_MSG);
+        this->send_static_content(req_clone, UNSUPPORTED_VERB_MSG);
         break;
     case RSErrorCode::ROUTE_NOT_FOUND:
-        this->send_static_content(req, CONTENT_404_MSG);
+        this->send_static_content(req_clone, CONTENT_404_MSG);
         break;
     default:
-        this->send_static_content(req, INTERNAL_SERVER_ERROR_MSG);
+        this->send_static_content(req_clone, INTERNAL_SERVER_ERROR_MSG);
         break;
     }
 }
@@ -150,11 +141,7 @@ void RSHookServer::handle_error_code(struct user_request* req, RSErrorCode error
 void RSHookServer::process_user_connect(int listen_socket)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-
-    struct io_user_request_event* evt = this->allocator.allocate<struct io_user_request_event>();
-    evt->base.io_event_type = RING_EVENT_IO_CLIENT_READ;
-    evt->base.req = nullptr; //will be set later when we parse the request
-    evt->http_request_data = (char*)this->allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE);
+    IOUserRequestEvent* evt = IOUserRequestEvent::create(this->allocator, nullptr, (char*)this->allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
 
     io_uring_prep_read(sqe, listen_socket, evt->http_request_data, HTTP_MAX_REQUEST_BUFFER_SIZE, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -162,7 +149,7 @@ void RSHookServer::process_user_connect(int listen_socket)
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_user_request(struct io_user_request_event* event)
+void RSHookServer::process_user_request(IOUserRequestEvent* event)
 {
     char* saveptr = nullptr;
 
@@ -171,36 +158,34 @@ void RSHookServer::process_user_request(struct io_user_request_event* event)
 
     if (strcmp(method, "get") == 0)
     {
+        //
+        //TODO: lots to do here
+        //
         if(strcmp(path, "/sample.json") == 0)
         {
             //TODO: better base lookup
             const char* fpath = (const char*)this->allocator.allocatebytesp2(strlen("/home/mark/Code/RSHook/build/static") + strlen("/sample.json") + 1);
             sprintf((char*)fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
 
-            this->process_http_file_access(event->base.req, fpath, true);
+            this->process_http_file_access(event, fpath, true);
         }
         else
         {
-            //TODO: we plan to add dynamic handling here later
-            handle_error_code(event->base.req, RSErrorCode::ROUTE_NOT_FOUND);
-            this->allocator.freep2<struct io_user_request_event>(event);
+            handle_error_code(event->req, RSErrorCode::ROUTE_NOT_FOUND);
+            event->release(this->allocator);
         }
     }
     else
     {
-        handle_error_code(event->base.req, RSErrorCode::UNSUPPORTED_VERB);
-        this->allocator.freep2<struct io_user_request_event>(event);
+        handle_error_code(event->req, RSErrorCode::UNSUPPORTED_VERB);
+        event->release(this->allocator);
     }
 }
 
-void RSHookServer::process_http_file_access(struct user_request* req, const char* file_path, bool memoize)
+void RSHookServer::process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    struct io_file_stat_event* evt = this->allocator.allocate<struct io_file_stat_event>();
-    evt->base.io_event_type = RING_EVENT_IO_FILE_STAT;
-    evt->base.req = req;
-    evt->file_path = file_path;
-    evt->memoize = memoize;
+    IOFileStatEvent* evt = IOFileStatEvent::create(this->allocator, req, file_path, memoize);
 
     io_uring_prep_statx(sqe, AT_FDCWD, file_path, AT_STATX_SYNC_AS_STAT, STATX_ALL, &evt->stat_buf);
     io_uring_sqe_set_data(sqe, evt);
@@ -208,18 +193,10 @@ void RSHookServer::process_http_file_access(struct user_request* req, const char
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_fstat_result(struct io_file_stat_event* event)
+void RSHookServer::process_fstat_result(IOFileStatEvent* event)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    struct io_file_open_event* evt = this->allocator.allocate<struct io_file_open_event>();
-    evt->base.io_event_type = RING_EVENT_IO_FILE_OPEN;
-    evt->base.req = event->base.req;
-    evt->file_path = event->file_path;
-    evt->stat_buf = event->stat_buf;
-    evt->file_fd = -1;
-    evt->memoize = event->memoize;
-
-    this->allocator.freep2<struct io_file_stat_event>(event);
+    IOFileOpenEvent* evt = IOFileOpenEvent::create(this->allocator, event, event->stat_buf, event->memoize);
 
     io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -227,43 +204,29 @@ void RSHookServer::process_fstat_result(struct io_file_stat_event* event)
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_fopen_result(struct io_file_open_event* event)
+void RSHookServer::process_fopen_result(IOFileOpenEvent* event)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    struct io_file_read_event* evt = this->allocator.allocate<struct io_file_read_event>();
-    evt->base.io_event_type = RING_EVENT_IO_FILE_READ;
-    evt->base.req = event->base.req;
-    evt->file_path = event->file_path;
-    evt->file_fd = event->file_fd;
+    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size), event->memoize);
 
-    evt->size = event->stat_buf.stx_size;
-    evt->file_data = (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size);
-
-    this->allocator.freep2<struct io_file_open_event>(event);
-
-    io_uring_prep_read(sqe, event->file_fd, (void*)evt->file_data, evt->size, 0);
+    io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_fread_result(struct io_file_read_event* event)
+void RSHookServer::process_fread_result(IOFileReadEvent* event)
 {
     ////
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
     this->file_cache_mgr.put(event->file_path, strlen(event->file_path), event->file_data, event->size);
-    this->send_cache_file_content(event->base.req, event->file_path, event->size, event->file_data);
+    this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, event->file_data);
 
     ////
     //Setup the close event to clean up the file descriptor
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    struct io_file_close_event* evt = this->allocator.allocate<struct io_file_close_event>();
-    evt->base.io_event_type = RING_EVENT_IO_FILE_CLOSE;
-    evt->base.req = event->base.req;
-    evt->file_path = event->file_path;
-
-    this->allocator.freep2<struct io_file_read_event>(event);
+    IOFileCloseEvent* evt = IOFileCloseEvent::create(this->allocator, event);
 
     io_uring_prep_close(sqe, event->file_fd);
     io_uring_sqe_set_data(sqe, evt);
@@ -271,38 +234,10 @@ void RSHookServer::process_fread_result(struct io_file_read_event* event)
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_fclose_result(struct io_file_close_event* event)
+void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
 {
     //no continuation as of now -- just clean up
-    this->allocator.freebytesp2((uint8_t*)event->file_path, strlen(event->file_path) + 1);
-    this->allocator.freep2<struct io_file_close_event>(event);
-}
-
-void RSHookServer::cleanup_user_request(struct user_request* req)
-{
-    this->allocator.freebytesp2((uint8_t*)req->route, strlen(req->route) + 1);
-    this->allocator.freebytesp2((uint8_t*)req->argdata, req->size);
-    this->allocator.freep2<struct user_request>(req);
-}
-
-void RSHookServer::cleanup_after_write(struct io_client_write_event* event)
-{
-    this->cleanup_user_request(event->base.req);
-
-    this->allocator.freebytesp2((uint8_t*)event->msg_data, event->size);
-    this->allocator.freep2<struct io_client_write_event>(event);
-}
-
-void RSHookServer::cleanup_after_write_vectored(struct io_client_write_event_vectored* event)
-{
-    this->cleanup_user_request(event->base.req);
-
-    for(int i = 0; i < 2; i++) {
-        if(event->iov_sizes[i] != -1) {
-            this->allocator.freebytesp2((uint8_t*)event->iov[i].iov_base, event->iov_sizes[i]);
-        }
-    }
-    this->allocator.freep2<struct io_client_write_event_vectored>(event);
+    event->release(this->allocator);
 }
 
 RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0)
@@ -362,19 +297,17 @@ void RSHookServer::runloop()
                 this->process_user_connect(cqe->res);
             }
             else {
-                struct io_event* event = (struct io_event*)cqe->user_data;
+                IOEvent* event = (IOEvent*)cqe->user_data;
 
                 switch (event->io_event_type) {
                     case RING_EVENT_IO_CLIENT_READ: {
                         CONSOLE_LOG_PRINT("Handling client read event -- %x\n", event->req->client_socket);
 
-                        struct io_user_request_event* eevt = (struct io_user_request_event*)event;
-                        if (cqe->res >= 0) {
-                            this->process_user_request(eevt);
+                        if (cqe->res < 0) {
+                            handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
                         }
                         else {
-                            handle_error_code(eevt->base.req, RSErrorCode::MALFORMED_REQUEST);
-                            this->allocator.freep2<struct io_user_request_event>(eevt);  
+                            this->process_user_request((IOUserRequestEvent*)event);
                         }
                         break;
                     }
@@ -406,7 +339,6 @@ void RSHookServer::runloop()
                         else {
                             CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
                             handle_error_code(eevt->base.req, RSErrorCode::MALFORMED_REQUEST);
-                            this->allocator.freep2<struct io_file_stat_event>(eevt);  
                         }
                         break;
                     }
@@ -448,6 +380,8 @@ void RSHookServer::runloop()
                         break;
                     }
                 }
+
+                event->release(this->allocator);
             }
 
             io_uring_cqe_seen(&this->ring, cqe);

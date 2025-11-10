@@ -29,9 +29,20 @@ public:
     UserRequest(int32_t client_socket, const char* route, size_t size, const char* argdata): client_socket(client_socket), route(route), size(size), argdata(argdata) { ; }
     ~UserRequest() = default;
 
-    UserRequest* create(ServerAllocator& allocator, int32_t client_socket, const char* route, size_t size, const char* argdata) 
+    static UserRequest* create(ServerAllocator& allocator, int32_t client_socket, const char* route, size_t size, const char* argdata) 
     {
         return new (allocator.allocate<UserRequest>()) UserRequest(client_socket, route, size, argdata);
+    }
+
+    UserRequest* clone(ServerAllocator& allocator) 
+    {
+        char* route_copy = (char*)allocator.allocatebytesp2(strlen(this->route) + 1);
+        memcpy(route_copy, this->route, strlen(this->route) + 1);
+
+        char* argdata_copy = (char*)allocator.allocatebytesp2(this->size);
+        memcpy(argdata_copy, this->argdata, this->size);
+
+        return this->create(allocator, this->client_socket, route_copy, this->size, argdata_copy);
     }
 
     void release(ServerAllocator& allocator) 
@@ -58,12 +69,12 @@ public:
 class IOUserRequestEvent : public IOEvent
 {
 public:
-    const char* http_request_data;
+    char* http_request_data;
 
-    IOUserRequestEvent(UserRequest* req, const char* http_request_data): IOEvent(RING_EVENT_IO_CLIENT_READ, req), http_request_data(http_request_data) { ; }
+    IOUserRequestEvent(UserRequest* req, char* http_request_data): IOEvent(RING_EVENT_IO_CLIENT_READ, req), http_request_data(http_request_data) { ; }
     virtual ~IOUserRequestEvent() = default;
 
-    IOUserRequestEvent* create(ServerAllocator& allocator, UserRequest* req, const char* http_request_data)
+    static IOUserRequestEvent* create(ServerAllocator& allocator, UserRequest* req, char* http_request_data)
     {
         return new (allocator.allocate<IOUserRequestEvent>()) IOUserRequestEvent(req, http_request_data);
     }
@@ -87,7 +98,7 @@ public:
     IOFileStatEvent(UserRequest* req, const char* file_path, bool memoize): IOEvent(RING_EVENT_IO_FILE_STAT, req), file_path(file_path), stat_buf(), memoize(memoize) { ; }
     virtual ~IOFileStatEvent() = default;
 
-    IOFileStatEvent* create(ServerAllocator& allocator, IOUserRequestEvent* ure, const char* file_path, struct statx stat_buf, bool memoize)
+    static IOFileStatEvent* create(ServerAllocator& allocator, IOUserRequestEvent* ure, const char* file_path, bool memoize)
     {
         auto req = ure->req;
         ure->req = nullptr; //transfer ownership
@@ -115,7 +126,7 @@ public:
     IOFileOpenEvent(UserRequest* req, const char* file_path, struct statx stat_buf, bool memoize): IOEvent(RING_EVENT_IO_FILE_OPEN, req), file_path(file_path), stat_buf(stat_buf), file_fd(0), memoize(memoize) { ; }
     virtual ~IOFileOpenEvent() = default;
 
-    IOFileOpenEvent* create(ServerAllocator& allocator, IOFileStatEvent* fse, struct statx stat_buf, bool memoize)
+    static IOFileOpenEvent* create(ServerAllocator& allocator, IOFileStatEvent* fse, struct statx stat_buf, bool memoize)
     {
         auto req = fse->req;
         auto fpath = fse->file_path;
@@ -141,14 +152,14 @@ public:
     int32_t file_fd;
 
     size_t size;
-    const char* file_data;
+    char* file_data;
 
     bool memoize;
 
-    IOFileReadEvent(UserRequest* req, const char* file_path, int32_t file_fd, size_t size, const char* file_data, bool memoize): IOEvent(RING_EVENT_IO_FILE_READ, req), file_path(file_path), file_fd(file_fd), size(size), file_data(file_data), memoize(memoize) { ; }
+    IOFileReadEvent(UserRequest* req, const char* file_path, int32_t file_fd, size_t size, char* file_data, bool memoize): IOEvent(RING_EVENT_IO_FILE_READ, req), file_path(file_path), file_fd(file_fd), size(size), file_data(file_data), memoize(memoize) { ; }
     virtual ~IOFileReadEvent() = default;
 
-    IOFileReadEvent* create(ServerAllocator& allocator, IOFileOpenEvent* foe, size_t size, const char* file_data, bool memoize)
+    static IOFileReadEvent* create(ServerAllocator& allocator, IOFileOpenEvent* foe, size_t size, char* file_data, bool memoize)
     {
         auto req = foe->req;
         auto fpath = foe->file_path;
@@ -177,12 +188,12 @@ public:
     IOFileCloseEvent(UserRequest* req, const char* file_path): IOEvent(RING_EVENT_IO_FILE_CLOSE, req), file_path(file_path) { ; }
     virtual ~IOFileCloseEvent() = default;
 
-    IOFileCloseEvent* create(ServerAllocator& allocator, IOFileReadEvent* fre)
+    static IOFileCloseEvent* create(ServerAllocator& allocator, IOFileReadEvent* fre)
     {
         auto req = fre->req;
         auto fpath = fre->file_path;
 
-        //don't transfer ownership or request or will double free
+        fre->req = nullptr; //transfer ownership
         fre->file_path = nullptr;
 
         return new (allocator.allocate<IOFileCloseEvent>()) IOFileCloseEvent(req, fpath);
@@ -190,7 +201,7 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        //this->req->release(allocator); -- return to user will handle this
+        this->req->release(allocator);
         allocator.freebytesp2((uint8_t*)this->file_path, strlen(this->file_path) + 1);
         allocator.freep2<IOFileCloseEvent>(this);
     }
@@ -205,7 +216,7 @@ public:
     IOClientWriteEvent(UserRequest* req, size_t size, const char* msg_data): IOEvent(RING_EVENT_IO_CLIENT_WRITE, req), size(size), msg_data(msg_data) { ; }
     virtual ~IOClientWriteEvent() = default;
 
-    IOClientWriteEvent* create(ServerAllocator& allocator, UserRequest* req, size_t size, const char* msg_data)
+    static IOClientWriteEvent* create(ServerAllocator& allocator, UserRequest* req, size_t size, const char* msg_data)
     {
         return new (allocator.allocate<IOClientWriteEvent>()) IOClientWriteEvent(req, size, msg_data);
     }
@@ -224,12 +235,12 @@ public:
     int32_t iov_sizes[2]; //-1 if we should not free the corresponding iovec entry
     struct iovec iov[2];
 
-    IOClientWriteEventVectored(UserRequest* req, int32_t iov_sizes[2], struct iovec iov[2]): IOEvent(RING_EVENT_IO_CLIENT_WRITE_VECTORED, req), iov_sizes{iov_sizes[0], iov_sizes[1]} { this->iov[0] = iov[0]; this->iov[1] = iov[1]; }
+    IOClientWriteEventVectored(UserRequest* req): IOEvent(RING_EVENT_IO_CLIENT_WRITE_VECTORED, req) { ; }
     virtual ~IOClientWriteEventVectored() = default;
 
-    IOClientWriteEventVectored* create(ServerAllocator& allocator, UserRequest* req, int32_t iov_sizes[2], struct iovec iov[2])
+    static IOClientWriteEventVectored* create(ServerAllocator& allocator, UserRequest* req)
     {
-        return new (allocator.allocate<IOClientWriteEventVectored>()) IOClientWriteEventVectored(req, iov_sizes, iov);
+        return new (allocator.allocate<IOClientWriteEventVectored>()) IOClientWriteEventVectored(req);
     }
 
     void release(ServerAllocator& allocator) override

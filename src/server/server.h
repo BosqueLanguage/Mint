@@ -44,30 +44,30 @@ private:
     ServerAllocator allocator;
     FileCacheManager file_cache_mgr;
 
-    void write_user_direct(struct user_request* req, size_t size, const char* data);
-    void write_user_file_contents(struct user_request* req, size_t size, const char* data, bool should_release);
-    void write_user_dynamic_response(struct user_request* req, size_t size, const char* data);
+    void write_user_direct(UserRequest* req, size_t size, const char* data);
+    void write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release);
+    void write_user_dynamic_response(UserRequest* req, size_t size, const char* data);
 
-    void send_static_content(struct user_request* req, const char* str) {
+    void send_static_content(UserRequest* req, const char* str) {
         this->write_user_direct(req, strlen(str), str);
     }
 
-    void send_cache_file_content(struct user_request* req, const char* path, size_t size, const char* data) {
+    void send_cache_file_content(UserRequest* req, const char* path, size_t size, const char* data) {
         this->write_user_file_contents(req, size, data, false);
     }
 
-    void handle_error_code(struct user_request* req, RSErrorCode error_code);
+    void handle_error_code(UserRequest* req, RSErrorCode error_code);
 
     void process_user_connect(int listen_socket);
-    void process_user_request(struct io_user_request_event* event);
+    void process_user_request(IOUserRequestEvent* event);
 
     //TODO: process a user action request
-    void process_http_file_access(struct user_request* req, const char* file_path, bool memoize);
+    void process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize);
 
-    void process_fstat_result(struct io_file_stat_event* event);
-    void process_fopen_result(struct io_file_open_event* event);
-    void process_fread_result(struct io_file_read_event* event);
-    void process_fclose_result(struct io_file_close_event* event);
+    void process_fstat_result(IOFileStatEvent* event);
+    void process_fopen_result(IOFileOpenEvent* event);
+    void process_fread_result(IOFileReadEvent* event);
+    void process_fclose_result(IOFileCloseEvent* event);
 
 public:
     RSHookServer();
