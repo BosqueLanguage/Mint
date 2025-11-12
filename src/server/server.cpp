@@ -141,7 +141,8 @@ void RSHookServer::handle_error_code(UserRequest* req, RSErrorCode error_code)
 void RSHookServer::process_user_connect(int listen_socket)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOUserRequestEvent* evt = IOUserRequestEvent::create(this->allocator, nullptr, (char*)this->allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
+    UserRequest* req = UserRequest::create(this->allocator, listen_socket, nullptr, 0, nullptr);
+    IOUserRequestEvent* evt = IOUserRequestEvent::create(this->allocator, req, (char*)this->allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
 
     io_uring_prep_read(sqe, listen_socket, evt->http_request_data, HTTP_MAX_REQUEST_BUFFER_SIZE, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -304,11 +305,12 @@ void RSHookServer::runloop()
                         CONSOLE_LOG_PRINT("Handling client read event -- %x\n", event->req->client_socket);
 
                         if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error reading from client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
                             handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+                            break;
                         }
-                        else {
-                            this->process_user_request((IOUserRequestEvent*)event);
-                        }
+
+                        this->process_user_request((IOUserRequestEvent*)event);
                         break;
                     }
                     case RING_EVENT_IO_CLIENT_WRITE: {
@@ -317,7 +319,9 @@ void RSHookServer::runloop()
                         if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
                         }
-                        this->cleanup_after_write((struct io_client_write_event*)event);
+
+                        //either way the user has been responded to just cleanup
+                        close(event->req->client_socket);
                         break;
                     }
                     case RING_EVENT_IO_CLIENT_WRITE_VECTORED: {
@@ -326,57 +330,63 @@ void RSHookServer::runloop()
                         if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
                         }
-                        this->cleanup_after_write_vectored((struct io_client_write_event_vectored*)event);
+                        
+                        //either way the user has been responded to just cleanup
+                        close(event->req->client_socket);
                         break;
                     }
                     case RING_EVENT_IO_FILE_STAT: {
                         CONSOLE_LOG_PRINT("Handling file stat event -- %x %s\n", event->req->client_socket, event->req->route);
                         
-                        struct io_file_stat_event* eevt = (struct io_file_stat_event*)event;
-                        if (cqe->res >= 0) {
-                            this->process_fstat_result(eevt);
+                        IOFileStatEvent* eevt = (IOFileStatEvent*)event;
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error processing file stat from client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(eevt->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
                         }
-                        else {
-                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
-                            handle_error_code(eevt->base.req, RSErrorCode::MALFORMED_REQUEST);
-                        }
+                        this->process_fstat_result(eevt);
                         break;
                     }
                     case RING_EVENT_IO_FILE_OPEN: {
                         CONSOLE_LOG_PRINT("Handling file open event -- %x %s\n", event->req->client_socket, event->req->route);
                         
-                        if (cqe->res >= 0) {
-                            this->process_fopen_result((struct io_file_open_event*)event);
-                        }
-                        else {
+                        if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error opening file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
                         }
+                        
+                        this->process_fopen_result((IOFileOpenEvent*)event);
                         break;
                     }
                     case RING_EVENT_IO_FILE_READ: {
                         CONSOLE_LOG_PRINT("Handling file read event -- %x %s\n", event->req->client_socket, event->req->route);
                         
-                        if (cqe->res >= 0) {
-                            this->process_fread_result((struct io_file_read_event*)event);
-                        }
-                        else {
+                        if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error reading file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
                         }
+
+                        this->process_fread_result((IOFileReadEvent*)event);
                         break;
                     }
                     case RING_EVENT_IO_FILE_CLOSE: {
                         CONSOLE_LOG_PRINT("Handling file close event -- %x %s\n", event->req->client_socket, event->req->route);
                         
-                        if (cqe->res >= 0) {
-                            this->process_fclose_result((struct io_file_close_event*)event);
-                        }
-                        else {
+                        if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error closing file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
                         }
+                        
+                        this->process_fclose_result((IOFileCloseEvent*)event);
                         break;
                     }
                     default: {
                         CONSOLE_LOG_PRINT("Unexpected req type %d\n", event->io_event_type);
+                        
+                        handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
                         break;
                     }
                 }

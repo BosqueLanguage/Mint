@@ -30,7 +30,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/build/output/rshook",
             "args": [],
-            "stopAtEntry": false,
+            "stopAtEntry": true,
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
@@ -50,35 +50,6 @@
                 "engineLogging": false
             },
             "udb": "live",
-            "timezone": "",
-            "udbConfiguration": {}
-        },
-        {
-            "name": "(UDB)  Replay an Undo recording",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "${workspaceFolder}/a.out",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ],
-            "miDebuggerPath": "udb",
-            "miDebuggerArgs": "",
-            "logging": {
-                "trace": false,
-                "traceResponse": false,
-                "engineLogging": false
-            },
-            "udb": "replay",
             "timezone": "",
             "udbConfiguration": {}
         }

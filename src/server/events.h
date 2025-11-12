@@ -36,19 +36,30 @@ public:
 
     UserRequest* clone(ServerAllocator& allocator) 
     {
-        char* route_copy = (char*)allocator.allocatebytesp2(strlen(this->route) + 1);
-        memcpy(route_copy, this->route, strlen(this->route) + 1);
+        char* route_copy = nullptr;
+        if(this->route != nullptr) {
+            route_copy = (char*)allocator.allocatebytesp2(strlen(this->route) + 1);
+            memcpy(route_copy, this->route, strlen(this->route) + 1);
+        }
 
-        char* argdata_copy = (char*)allocator.allocatebytesp2(this->size);
-        memcpy(argdata_copy, this->argdata, this->size);
+        char* argdata_copy = nullptr;
+        if(this->argdata != nullptr) {
+            argdata_copy = (char*)allocator.allocatebytesp2(this->size);
+            memcpy(argdata_copy, this->argdata, this->size);
+        }
 
         return this->create(allocator, this->client_socket, route_copy, this->size, argdata_copy);
     }
 
     void release(ServerAllocator& allocator) 
     {
-        allocator.freebytesp2((uint8_t*)this->route, strlen(this->route) + 1);
-        allocator.freebytesp2((uint8_t*)this->argdata, this->size);
+        if(this->route != nullptr) {
+            allocator.freebytesp2((uint8_t*)this->route, strlen(this->route) + 1);
+        }
+
+        if(this->argdata != nullptr) {
+            allocator.freebytesp2((uint8_t*)this->argdata, this->size);
+        }
 
         allocator.freep2<UserRequest>(this);
     }
