@@ -227,10 +227,9 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
 
     if (strncmp(verb.first, "get", verb.second - verb.first) == 0)
     {
-        //
-        //TODO: lots to do here
-        //
-        if(pathMatchsRoute(path, "/sample.json"))
+        /** TODO: wan't a known URI for hyper-agent discovery **/
+
+        if(pathMatchsRoute(path, "/sample.json")) /*Route type #1 file service -- static (permanent) files or basic caching as resources*/
         {
             std::pair<const char*, size_t> cached_data = this->file_cache_mgr.tryGet(event->req->route);
             if(cached_data.first != nullptr) {
@@ -245,12 +244,12 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
                 this->process_http_file_access(event, fpath, true);
             }
         }
-        else if(pathMatchsRoute(path, "/hello"))
+        else if(pathMatchsRoute(path, "/hello")) /* Route type #2 immediate response of fixed (small) values */
         {
             const char* response = "{\"message\": \"Hello, world!\"}";
             this->send_immediate_fixed_content(event->req->clone(this->allocator), s_strlen(response), response, "json");
         }
-        else if(pathMatchsRoute(path, "/helloname"))
+        else if(pathMatchsRoute(path, "/helloname")) /* Route type #3 compute response based on input data inline with request */
         {
             size_t datalen = extractHTTPContentLength(event->http_request_data);
             std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
@@ -263,9 +262,16 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
 
             this->write_user_dynamic_response(event->req->clone(this->allocator), datasize, sendbuff);
         }
-        else if(pathMatchsRoute(path, "/fib"))
+        else if(pathMatchsRoute(path, "/fib")) /* Route type #4 compute response based on input data but run on thread-pool for non-blocking */
         {
-            assert(false); //TODO: implement Fibonacci computation
+            size_t datalen = extractHTTPContentLength(event->http_request_data);
+            std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+
+            auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+            int value = jpayload["value"].get<int>();
+
+            //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
+            assert(false);
         }
         else
         {
@@ -274,6 +280,8 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
     }
     else
     {
+        /* posts here and more */
+
         handle_error_code(event->req, RSErrorCode::UNSUPPORTED_VERB);
     }
 }
