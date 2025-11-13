@@ -36,30 +36,16 @@ public:
 
     UserRequest* clone(ServerAllocator& allocator) 
     {
-        char* route_copy = nullptr;
-        if(this->route != nullptr) {
-            route_copy = (char*)allocator.allocatebytesp2(strlen(this->route) + 1);
-            memcpy(route_copy, this->route, strlen(this->route) + 1);
-        }
-
-        char* argdata_copy = nullptr;
-        if(this->argdata != nullptr) {
-            argdata_copy = (char*)allocator.allocatebytesp2(this->size);
-            memcpy(argdata_copy, this->argdata, this->size);
-        }
+        char* route_copy = allocator.strcopyp2(this->route);
+        char* argdata_copy = allocator.strcopyp2(this->argdata);
 
         return this->create(allocator, this->client_socket, route_copy, this->size, argdata_copy);
     }
 
     void release(ServerAllocator& allocator) 
     {
-        if(this->route != nullptr) {
-            allocator.freebytesp2((uint8_t*)this->route, strlen(this->route) + 1);
-        }
-
-        if(this->argdata != nullptr) {
-            allocator.freebytesp2((uint8_t*)this->argdata, this->size);
-        }
+        allocator.freebytesp2((uint8_t*)this->route, s_strlen(this->route) + 1);
+        allocator.freebytesp2((uint8_t*)this->argdata, this->size);
 
         allocator.freep2<UserRequest>(this);
     }
@@ -92,7 +78,10 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
         allocator.freebytesp2((uint8_t*)this->http_request_data, HTTP_MAX_REQUEST_BUFFER_SIZE);
         allocator.freep2<IOUserRequestEvent>(this);
     }
@@ -119,8 +108,11 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
-        allocator.freebytesp2((uint8_t*)this->file_path, strlen(this->file_path) + 1);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
+        allocator.freebytesp2((uint8_t*)this->file_path, s_strlen(this->file_path) + 1);
         allocator.freep2<IOFileStatEvent>(this);
     }
 };
@@ -130,11 +122,10 @@ class IOFileOpenEvent : public IOEvent
 public:
     const char* file_path;
     struct statx stat_buf;
-    int32_t file_fd;
 
     const bool memoize;
 
-    IOFileOpenEvent(UserRequest* req, const char* file_path, struct statx stat_buf, bool memoize): IOEvent(RING_EVENT_IO_FILE_OPEN, req), file_path(file_path), stat_buf(stat_buf), file_fd(0), memoize(memoize) { ; }
+    IOFileOpenEvent(UserRequest* req, const char* file_path, struct statx stat_buf, bool memoize): IOEvent(RING_EVENT_IO_FILE_OPEN, req), file_path(file_path), stat_buf(stat_buf), memoize(memoize) { ; }
     virtual ~IOFileOpenEvent() = default;
 
     static IOFileOpenEvent* create(ServerAllocator& allocator, IOFileStatEvent* fse, struct statx stat_buf, bool memoize)
@@ -150,8 +141,11 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
-        allocator.freebytesp2((uint8_t*)this->file_path, strlen(this->file_path) + 1);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+        
+        allocator.freebytesp2((uint8_t*)this->file_path, s_strlen(this->file_path) + 1);
         allocator.freep2<IOFileOpenEvent>(this);
     }
 };
@@ -170,11 +164,11 @@ public:
     IOFileReadEvent(UserRequest* req, const char* file_path, int32_t file_fd, size_t size, char* file_data, bool memoize): IOEvent(RING_EVENT_IO_FILE_READ, req), file_path(file_path), file_fd(file_fd), size(size), file_data(file_data), memoize(memoize) { ; }
     virtual ~IOFileReadEvent() = default;
 
-    static IOFileReadEvent* create(ServerAllocator& allocator, IOFileOpenEvent* foe, size_t size, char* file_data, bool memoize)
+    static IOFileReadEvent* create(ServerAllocator& allocator, IOFileOpenEvent* foe, int file_descriptor, size_t size, char* file_data, bool memoize)
     {
         auto req = foe->req;
         auto fpath = foe->file_path;
-        auto ffd = foe->file_fd;
+        auto ffd = file_descriptor;
 
         foe->req = nullptr; //transfer ownership
         foe->file_path = nullptr;
@@ -184,8 +178,11 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
-        allocator.freebytesp2((uint8_t*)this->file_path, strlen(this->file_path) + 1);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
+        allocator.freebytesp2((uint8_t*)this->file_path, s_strlen(this->file_path) + 1);
         allocator.freebytesp2((uint8_t*)this->file_data, this->size);
         allocator.freep2<IOFileReadEvent>(this);
     }
@@ -212,8 +209,11 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
-        allocator.freebytesp2((uint8_t*)this->file_path, strlen(this->file_path) + 1);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
+        allocator.freebytesp2((uint8_t*)this->file_path, s_strlen(this->file_path) + 1);
         allocator.freep2<IOFileCloseEvent>(this);
     }
 };
@@ -234,7 +234,10 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+        
         //msg data in this case is always owned by others
         allocator.freep2<IOClientWriteEvent>(this);
     }
@@ -256,7 +259,10 @@ public:
 
     void release(ServerAllocator& allocator) override
     {
-        this->req->release(allocator);
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
         for (int i = 0; i < 2; i++) {
             if (this->iov_sizes[i] != -1) {
                 allocator.freebytesp2((uint8_t*)this->iov[i].iov_base, this->iov_sizes[i]);

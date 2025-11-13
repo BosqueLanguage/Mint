@@ -78,8 +78,8 @@ void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const
     IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
     //Set the headers as the first iovec entry
-    void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
-    int header_len = build_file_headers(req->route, size, (char*)header);
+    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, header);
     evt->iov[0].iov_base = header;
     evt->iov[0].iov_len = header_len;
     evt->iov_sizes[0] = header_len;
@@ -153,9 +153,11 @@ void RSHookServer::process_user_connect(int listen_socket)
 void RSHookServer::process_user_request(IOUserRequestEvent* event)
 {
     char* saveptr = nullptr;
-
     const char* method = strtok_r(event->http_request_data, " ", &saveptr);
     const char* path = strtok_r(NULL, " ", &saveptr);
+
+    event->req->route = this->allocator.strcopyp2(path);
+    event->req->argdata = nullptr;
 
     if (strcmp(method, "get") == 0)
     {
@@ -164,22 +166,27 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
         //
         if(strcmp(path, "/sample.json") == 0)
         {
-            //TODO: better base lookup
-            const char* fpath = (const char*)this->allocator.allocatebytesp2(strlen("/home/mark/Code/RSHook/build/static") + strlen("/sample.json") + 1);
-            sprintf((char*)fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
+            const char* cached_data = this->file_cache_mgr.tryGet(path);
+            if(cached_data != nullptr) {
+                CONSOLE_LOG_PRINT("Cache hit for %s\n", path);
+                this->send_cache_file_content(event->req->clone(this->allocator), path, s_strlen(cached_data), cached_data);
+            }
+            else {
+                //TODO: better base lookup
+                const char* fpath = (const char*)this->allocator.allocatebytesp2(s_strlen("/home/mark/Code/RSHook/build/static") + s_strlen("/sample.json") + 1);
+                sprintf((char*)fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
 
-            this->process_http_file_access(event, fpath, true);
+                this->process_http_file_access(event, fpath, true);
+            }
         }
         else
         {
             handle_error_code(event->req, RSErrorCode::ROUTE_NOT_FOUND);
-            event->release(this->allocator);
         }
     }
     else
     {
         handle_error_code(event->req, RSErrorCode::UNSUPPORTED_VERB);
-        event->release(this->allocator);
     }
 }
 
@@ -205,12 +212,12 @@ void RSHookServer::process_fstat_result(IOFileStatEvent* event)
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::process_fopen_result(IOFileOpenEvent* event)
+void RSHookServer::process_fopen_result(IOFileOpenEvent* event, int file_descriptor)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size), event->memoize);
+    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, file_descriptor, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size), event->memoize);
 
-    io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
+    io_uring_prep_read(sqe, file_descriptor, evt->file_data, evt->size, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
@@ -221,7 +228,7 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
     ////
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
-    this->file_cache_mgr.put(event->file_path, strlen(event->file_path), event->file_data, event->size);
+    this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), event->file_data, event->size);
     this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, event->file_data);
 
     ////
@@ -237,8 +244,7 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
 
 void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
 {
-    //no continuation as of now -- just clean up
-    event->release(this->allocator);
+    //no continuation as of now -- just stop processing
 }
 
 RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0)
@@ -356,7 +362,7 @@ void RSHookServer::runloop()
                             break;
                         }
                         
-                        this->process_fopen_result((IOFileOpenEvent*)event);
+                        this->process_fopen_result((IOFileOpenEvent*)event, cqe->res);
                         break;
                     }
                     case RING_EVENT_IO_FILE_READ: {

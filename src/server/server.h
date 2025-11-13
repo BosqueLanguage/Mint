@@ -65,7 +65,7 @@ private:
     void process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize);
 
     void process_fstat_result(IOFileStatEvent* event);
-    void process_fopen_result(IOFileOpenEvent* event);
+    void process_fopen_result(IOFileOpenEvent* event, int file_descriptor);
     void process_fread_result(IOFileReadEvent* event);
     void process_fclose_result(IOFileCloseEvent* event);
 

@@ -36,6 +36,10 @@ public:
     template<typename T>
     void freep2(T* ptr)
     {
+        if(ptr == nullptr) {
+            return;
+        }
+
         constexpr size_t bin = s_binidx(sizeof(T));
 
         FREE_LIST_SET_NEXT(ptr, this->m_allocs[bin]);
@@ -55,6 +59,20 @@ public:
         }
 
         return (uint8_t*)res;
+    }
+
+    char* strcopyp2(const char* str)
+    {
+        if(str == nullptr) {
+            return nullptr;
+        }
+
+        size_t size = s_strlen(str);
+        char* res = (char*)this->allocatebytesp2(size + 1);
+        memcpy(res, str, size);
+        res[size] = '\0';
+
+        return res;
     }
 
     void freebytesp2(uint8_t* ptr, size_t size)

@@ -10,3 +10,13 @@ const char* get_filename_ext(const char* filename)
         return dot + 1;
     }
 }
+
+
+size_t s_strlen(const char* str)
+{
+    if(str == nullptr) {
+        return 0;
+    }
+
+    return strlen(str);
+}
