@@ -117,10 +117,12 @@ public:
         }
     }
 
-    void put(const char* path, size_t pathsize, const char* data, size_t datasize)
+    const char* put(const char* path, size_t pathsize, const char* data, size_t datasize)
     {
         if(pathsize <= SMALL_CACHE_PATH) {
-            this->memoizedsmall.emplace(FileCacheSmallKey<SMALL_CACHE_PATH>{path, pathsize}, FileCachePermanentEntry{data, datasize});
+            auto it = this->memoizedsmall.emplace(FileCacheSmallKey<SMALL_CACHE_PATH>{path, pathsize}, FileCachePermanentEntry{data, datasize});
+
+            return it.first->second.m_data;
         }
         else {
             assert(false); //TODO: later implement larger key caching

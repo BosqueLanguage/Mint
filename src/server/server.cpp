@@ -74,6 +74,22 @@ void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* 
 
 void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
 {
+    /*
+    char* payload = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX + size + 1);
+    int header_len = build_file_headers(req->route, size, payload);
+
+    strncpy(payload + header_len, data, size);
+    payload[header_len + size + 1] = '\0';
+
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEvent* evt = IOClientWriteEvent::create(this->allocator, req, header_len + size, payload);
+
+    io_uring_prep_write(sqe, req->client_socket, payload, header_len + size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+    */
+
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
     IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
@@ -85,7 +101,7 @@ void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const
     evt->iov_sizes[0] = header_len;
 
     //Set the contents as the second iovec entry
-    evt->iov[1].iov_base = (void*)data;
+    evt->iov[1].iov_base = (char*)data;
     evt->iov[1].iov_len = size;
     evt->iov_sizes[1] = should_release ? (int32_t)size : -1;
 
@@ -101,8 +117,8 @@ void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, co
     IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
     //Set the headers as the first iovec entry
-    void* header = (void*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
-    int header_len = build_file_headers(req->route, size, (char*)header);
+    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, header);
     evt->iov[0].iov_base = header;
     evt->iov[0].iov_len = header_len;
     evt->iov_sizes[0] = header_len;
@@ -231,8 +247,8 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
     ////
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
-    this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), this->allocator.strcopyp2(event->file_data), event->size);
-    this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, event->file_data);
+    const char* cdata = this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), this->allocator.strcopyp2(event->file_data), event->size);
+    this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, cdata);
 
     ////
     //Setup the close event to clean up the file descriptor
