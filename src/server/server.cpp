@@ -1,5 +1,8 @@
 #include "server.h"
 
+#include "json.hpp"
+typedef nlohmann::json json;
+
 #define HEADER_BUFFER_MAX 512
 #define QUEUE_DEPTH 256
 
@@ -15,34 +18,33 @@
 #define CONSOLE_LOG_PRINT(...)
 #endif
 
-const char* get_header_content_type(const char* path)
+const char* get_header_content_type(const char* extstr)
 {
-    const char* file_ext = get_filename_ext(path);
-    if (strcmp("jpg", file_ext) == 0) {
+    if (strcmp("jpg", extstr) == 0) {
         return "Content-Type: image/jpeg\r\n";
     }
-    else if (strcmp("jpeg", file_ext) == 0) {
+    else if (strcmp("jpeg", extstr) == 0) {
         return "Content-Type: image/jpeg\r\n";
     }
-    else if (strcmp("png", file_ext) == 0) {
+    else if (strcmp("png", extstr) == 0) {
         return "Content-Type: image/png\r\n";
     }
-    else if (strcmp("gif", file_ext) == 0) {
+    else if (strcmp("gif", extstr) == 0) {
         return "Content-Type: image/gif\r\n";
     }
-    else if (strcmp("html", file_ext) == 0) {
+    else if (strcmp("html", extstr) == 0) {
         return "Content-Type: text/html\r\n";
     }
-    else if (strcmp("js", file_ext) == 0) {
+    else if (strcmp("js", extstr) == 0) {
         return "Content-Type: application/javascript\r\n";
     }
-    else if (strcmp("css", file_ext) == 0) {
+    else if (strcmp("css", extstr) == 0) {
         return "Content-Type: text/css\r\n";
     }
-    else if (strcmp("txt", file_ext) == 0) {
+    else if (strcmp("txt", extstr) == 0) {
         return "Content-Type: text/plain\r\n";
     }
-    else if (strcmp("json", file_ext) == 0) {
+    else if (strcmp("json", extstr) == 0) {
         return "Content-Type: application/json\r\n";
     }
     else {
@@ -55,9 +57,15 @@ int build_dynamic_headers(size_t contents_size, char* send_buffer)
     return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: application/json\r\nContent-Length: %ld\r\n\r\n", SERVER_STRING, contents_size);
 }
 
-int build_file_headers(const char* path, size_t contents_size, char* send_buffer)
+int build_direct_user_headers(const char* path, size_t contents_size, char* send_buffer, const char* dkind)
 {
     const char* ftype = get_header_content_type(path);
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%s%sContent-Length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
+}
+
+int build_file_headers(const char* path, size_t contents_size, char* send_buffer)
+{
+    const char* ftype = get_header_content_type(get_filename_ext(path));
     return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%s%sContent-Length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
 }
 
@@ -72,24 +80,31 @@ void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* 
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
+void RSHookServer::write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind, bool should_release)
 {
-    /*
-    char* payload = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX + size + 1);
-    int header_len = build_file_headers(req->route, size, payload);
-
-    strncpy(payload + header_len, data, size);
-    payload[header_len + size + 1] = '\0';
-
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOClientWriteEvent* evt = IOClientWriteEvent::create(this->allocator, req, header_len + size, payload);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
-    io_uring_prep_write(sqe, req->client_socket, payload, header_len + size, 0);
+    //Set the headers as the first iovec entry
+    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_direct_user_headers(req->route, size, header, dkind);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_sizes[0] = header_len;
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_sizes[1] = should_release ? (int32_t)size : -1;
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
-    */
+}
 
+void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
+{
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
     IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
 
@@ -166,26 +181,61 @@ void RSHookServer::process_user_connect(int listen_socket)
     this->submission_count++; //track number of submissions for batching
 }
 
+std::pair<const char*, const char*> extractHTTPVerb(const char* http_request_data)
+{
+    const char* vstart = http_request_data;
+    const char* vend = strstr(http_request_data, " ");
+
+    return std::make_pair(vstart, vend);
+}
+
+std::pair<const char*, const char*> extractHTTPPath(const char* http_request_data)
+{
+    const char* pstart = strstr(http_request_data, " /") + 1;
+    const char* pend = strstr(pstart, " ");
+
+    return std::make_pair(pstart, pend);
+}
+
+size_t extractHTTPContentLength(const char* http_request_data)
+{
+    const char* clstart = strstr(http_request_data, "Content-Length: ") + strlen("Content-Length: ");
+
+    return strtol(clstart, nullptr, 10);
+}
+
+std::pair<const char*, const char*> extractHTTPData(const char* http_request_data, size_t content_length)
+{
+    const char* dstart = strstr(http_request_data, "\r\n\r\n") + 4;
+    const char* dend = dstart + content_length;
+
+    return std::make_pair(dstart, dend);
+}
+
+bool pathMatchsRoute(const std::pair<const char*, const char*>& path, const char* match)
+{
+    return (strncmp(path.first, match, path.second - path.first) == 0);
+}
+
 void RSHookServer::process_user_request(IOUserRequestEvent* event)
 {
-    char* saveptr = nullptr;
-    const char* method = strtok_r(event->http_request_data, " ", &saveptr);
-    const char* path = strtok_r(NULL, " ", &saveptr);
+    std::pair<const char*, const char*> verb = extractHTTPVerb(event->http_request_data);
+    std::pair<const char*, const char*> path = extractHTTPPath(event->http_request_data);
 
-    event->req->route = this->allocator.strcopyp2(path);
+    event->req->route = this->allocator.strcopyp2(path.first, path.second - path.first);
     event->req->argdata = nullptr;
 
-    if (strcmp(method, "get") == 0)
+    if (strncmp(verb.first, "get", verb.second - verb.first) == 0)
     {
         //
         //TODO: lots to do here
         //
-        if(strcmp(path, "/sample.json") == 0)
+        if(pathMatchsRoute(path, "/sample.json"))
         {
-            const char* cached_data = this->file_cache_mgr.tryGet(path);
-            if(cached_data != nullptr) {
-                CONSOLE_LOG_PRINT("Cache hit for %s\n", path);
-                this->send_cache_file_content(event->req->clone(this->allocator), path, s_strlen(cached_data), cached_data);
+            std::pair<const char*, size_t> cached_data = this->file_cache_mgr.tryGet(event->req->route);
+            if(cached_data.first != nullptr) {
+                CONSOLE_LOG_PRINT("Cache hit for %s\n", event->req->route);
+                this->send_cache_file_content(event->req->clone(this->allocator), cached_data.second, cached_data.first);
             }
             else {
                 //TODO: better base lookup
@@ -194,6 +244,28 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
 
                 this->process_http_file_access(event, fpath, true);
             }
+        }
+        else if(pathMatchsRoute(path, "/hello"))
+        {
+            const char* response = "{\"message\": \"Hello, world!\"}";
+            this->send_immediate_fixed_content(event->req->clone(this->allocator), s_strlen(response), response, "json");
+        }
+        else if(pathMatchsRoute(path, "/helloname"))
+        {
+            size_t datalen = extractHTTPContentLength(event->http_request_data);
+            std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+
+            auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+            std::string name = jpayload["name"].get<std::string>();
+            
+            char* sendbuff = (char*)this->allocator.allocatebytesp2(256);
+            size_t datasize = std::snprintf(sendbuff, 256, "{\"message\":\"Hello, %s!\"}", name.c_str());
+
+            this->write_user_dynamic_response(event->req->clone(this->allocator), datasize, sendbuff);
+        }
+        else if(pathMatchsRoute(path, "/fib"))
+        {
+            assert(false); //TODO: implement Fibonacci computation
         }
         else
         {
@@ -248,7 +320,7 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
     const char* cdata = this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), this->allocator.strcopyp2(event->file_data), event->size);
-    this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, cdata);
+    this->send_cache_file_content(event->req->clone(this->allocator), event->size, cdata);
 
     ////
     //Setup the close event to clean up the file descriptor

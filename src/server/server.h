@@ -45,6 +45,7 @@ private:
     FileCacheManager file_cache_mgr;
 
     void write_user_direct(UserRequest* req, size_t size, const char* data);
+    void write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind, bool should_release);
     void write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release);
     void write_user_dynamic_response(UserRequest* req, size_t size, const char* data);
 
@@ -52,7 +53,15 @@ private:
         this->write_user_direct(req, strlen(str), str);
     }
 
-    void send_cache_file_content(UserRequest* req, const char* path, size_t size, const char* data) {
+    void send_immediate_fixed_content(UserRequest* req,  size_t size, const char* data, const char* dkind) {
+        this->write_user_direct_wheaders(req, size, data, dkind, false);
+    }
+
+    void send_compute_content(UserRequest* req,  size_t size, const char* data, const char* dkind) {
+        this->write_user_direct_wheaders(req, size, data, dkind, true);
+    }
+
+    void send_cache_file_content(UserRequest* req, size_t size, const char* data) {
         this->write_user_file_contents(req, size, data, false);
     }
 

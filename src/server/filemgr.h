@@ -98,7 +98,7 @@ public:
         this->memoizedsmall.clear();
     }
 
-    const char* tryGet(const char* path)
+    std::pair<const char*, size_t> tryGet(const char* path)
     {
         size_t len = strlen(path);
         if(len <= SMALL_CACHE_PATH) {
@@ -106,10 +106,10 @@ public:
 
             auto it = this->memoizedsmall.find(key);
             if(it != this->memoizedsmall.end()) {
-                return it->second.m_data;
+                return std::make_pair(it->second.m_data, it->second.m_size);
             }
             else {
-                return nullptr;
+                return std::make_pair(nullptr, 0);
             }
         }
         else {

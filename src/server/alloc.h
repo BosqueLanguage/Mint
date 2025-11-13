@@ -61,6 +61,19 @@ public:
         return (uint8_t*)res;
     }
 
+    char* strcopyp2(const char* str, size_t size)
+    {
+        if(str == nullptr) {
+            return nullptr;
+        }
+
+        char* res = (char*)this->allocatebytesp2(size + 1);
+        memcpy(res, str, size);
+        res[size] = '\0';
+
+        return res;
+    }
+
     char* strcopyp2(const char* str)
     {
         if(str == nullptr) {

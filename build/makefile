@@ -41,7 +41,7 @@ $(OUT_EXE)rshook: $(SERVER_OBJS) $(SERVER_HEADERS) $(SRC_DIR)rshook.cpp
 
 $(OUT_OBJ)server.o: $(SERVER_HEADERS) $(SERVER_DIR)server.cpp
 	@mkdir -p $(OUT_OBJ)
-	$(CPP) $(CPPFLAGS) -o $(OUT_OBJ)server.o -c $(SERVER_DIR)server.cpp
+	$(CPP) $(CPPFLAGS) $(APPLICATION_FLAGS) $(JSON_INCLUDES) -o $(OUT_OBJ)server.o -c $(SERVER_DIR)server.cpp
 
 $(OUT_OBJ)alloc.o: $(SERVER_HEADERS) $(SERVER_DIR)alloc.cpp
 	@mkdir -p $(OUT_OBJ)
