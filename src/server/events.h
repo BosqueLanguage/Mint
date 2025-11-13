@@ -183,7 +183,7 @@ public:
         }
 
         allocator.freebytesp2((uint8_t*)this->file_path, s_strlen(this->file_path) + 1);
-        allocator.freebytesp2((uint8_t*)this->file_data, this->size);
+        allocator.freebytesp2((uint8_t*)this->file_data, this->size + 1); //has a null terminator
         allocator.freep2<IOFileReadEvent>(this);
     }
 };

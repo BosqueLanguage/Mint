@@ -52,13 +52,13 @@ const char* get_header_content_type(const char* path)
 
 int build_dynamic_headers(size_t contents_size, char* send_buffer)
 {
-    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: application/json\r\ncontent-length: %ld\r\n\r\n", SERVER_STRING, contents_size);
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: application/json\r\nContent-Length: %ld\r\n\r\n", SERVER_STRING, contents_size);
 }
 
 int build_file_headers(const char* path, size_t contents_size, char* send_buffer)
 {
     const char* ftype = get_header_content_type(path);
-    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: %s\r\ncontent-length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%s%sContent-Length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
 }
 
 void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* data)
@@ -108,7 +108,7 @@ void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, co
     evt->iov_sizes[0] = header_len;
 
     //Set the contents as the second iovec entry
-    evt->iov[1].iov_base = (void*)data;
+    evt->iov[1].iov_base = (char*)data;
     evt->iov[1].iov_len = size;
     evt->iov_sizes[1] = (int32_t)size;
 
@@ -215,7 +215,7 @@ void RSHookServer::process_fstat_result(IOFileStatEvent* event)
 void RSHookServer::process_fopen_result(IOFileOpenEvent* event, int file_descriptor)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, file_descriptor, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size), event->memoize);
+    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, file_descriptor, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size + 1), event->memoize);
 
     io_uring_prep_read(sqe, file_descriptor, evt->file_data, evt->size, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -225,10 +225,13 @@ void RSHookServer::process_fopen_result(IOFileOpenEvent* event, int file_descrip
 
 void RSHookServer::process_fread_result(IOFileReadEvent* event)
 {
+    //Add null terminator for uniformity on the read file (note we made sure there was an extra byte allocated)
+    event->file_data[event->size] = '\0';
+
     ////
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
-    this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), event->file_data, event->size);
+    this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), this->allocator.strcopyp2(event->file_data), event->size);
     this->send_cache_file_content(event->req->clone(this->allocator), event->file_path, event->size, event->file_data);
 
     ////
