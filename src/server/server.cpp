@@ -1,5 +1,7 @@
 #include "server.h"
 
+#include "../application/apis.h"
+
 #include "json.hpp"
 typedef nlohmann::json json;
 
@@ -268,10 +270,10 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
             std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
 
             auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
-            int value = jpayload["value"].get<int>();
+            int64_t value = jpayload["value"].get<int64_t>();
 
             //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
-            assert(false);
+            xxxx;
         }
         else
         {
@@ -344,6 +346,22 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
 void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
 {
     //no continuation as of now -- just stop processing
+}
+
+void RSHookServer::process_job_request(IOUserRequestEvent* event)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+
+    io_uring_prep_futex_wait(sqe, nullptr, FUTEX_WAIT, 0, nullptr, 0, 0);
+    xxxx;
+}
+
+void RSHookServer::process_job_complete(IOJobCompleteEvent* event)
+{
+    char* data = event->result;
+    event->result = nullptr;
+    
+    this->send_compute_content(event->req->clone(this->allocator), event->size, data, "json");
 }
 
 RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0)
@@ -486,6 +504,18 @@ void RSHookServer::runloop()
                         }
                         
                         this->process_fclose_result((IOFileCloseEvent*)event);
+                        break;
+                    }
+                    case RING_EVENT_JOB_COMPLETE: {
+                        CONSOLE_LOG_PRINT("Handling job request completion event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error processing job request for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+                        
+                        this->process_job_complete((IOJobCompleteEvent*)event);
                         break;
                     }
                     default: {

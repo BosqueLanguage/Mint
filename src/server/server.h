@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <netinet/in.h>
 
+#include <stdatomic.h>
+#include <linux/futex.h>
 #include <liburing.h>
 
 #define RING_EVENT_TYPE_IO 0x0
@@ -77,6 +79,9 @@ private:
     void process_fopen_result(IOFileOpenEvent* event, int file_descriptor);
     void process_fread_result(IOFileReadEvent* event);
     void process_fclose_result(IOFileCloseEvent* event);
+
+    void process_job_request(IOUserRequestEvent* event);
+    void process_job_complete(IOJobCompleteEvent* event);
 
 public:
     RSHookServer();

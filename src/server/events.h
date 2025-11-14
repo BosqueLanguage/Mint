@@ -14,6 +14,8 @@
 #define RING_EVENT_IO_CLIENT_WRITE 0x20
 #define RING_EVENT_IO_CLIENT_WRITE_VECTORED 0x30
 
+#define RING_EVENT_JOB_COMPLETE 0x100
+
 /**
  * Data structure representing the input to a route handler as extracted from the HTTP request
  **/
@@ -269,5 +271,30 @@ public:
             }
         }
         allocator.freep2<IOClientWriteEventVectored>(this);
+    }
+};
+
+class IOJobCompleteEvent : public IOEvent
+{
+public:
+    size_t size;
+    char* result;
+    
+    IOJobCompleteEvent(UserRequest* req, size_t size, char* result): IOEvent(RING_EVENT_JOB_COMPLETE, req), size(size), result(result) { ; }
+    virtual ~IOJobCompleteEvent() = default;
+
+    static IOJobCompleteEvent* create(ServerAllocator& allocator, UserRequest* req, size_t size, char* result)
+    {
+        return new (allocator.allocate<IOJobCompleteEvent>()) IOJobCompleteEvent(req, size, result);
+    }
+
+    void release(ServerAllocator& allocator) override
+    {
+        if(this->req != nullptr) {
+            this->req->release(allocator);
+        }
+
+        allocator.freebytesp2((uint8_t*)this->result, this->size + 1); //has a null terminator
+        allocator.freep2<IOJobCompleteEvent>(this);
     }
 };
