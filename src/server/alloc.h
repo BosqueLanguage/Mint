@@ -149,7 +149,7 @@ public:
 
         std::lock_guard<std::mutex> lock(this->g_pages_mutex);
 
-        FREE_LIST_SET_NEXT(ptr, *this->m_allocs);
+        FREE_LIST_SET_NEXT(ptr, this->m_allocs);
         *this->m_allocs = ptr;
     }
 };

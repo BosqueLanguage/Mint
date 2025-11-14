@@ -225,9 +225,12 @@ std::pair<const char*, const char*> extractHTTPPath(const char* http_request_dat
 
 size_t extractHTTPContentLength(const char* http_request_data)
 {
-    const char* clstart = strstr(http_request_data, "Content-Length: ") + strlen("Content-Length: ");
+    const char* clstart = strstr(http_request_data, "Content-Length: ");
+    if(clstart == nullptr) {
+        return 0;
+    }
 
-    return strtol(clstart, nullptr, 10);
+    return strtol(clstart + strlen("Content-Length: "), nullptr, 10);
 }
 
 std::pair<const char*, const char*> extractHTTPData(const char* http_request_data, size_t content_length)
@@ -243,8 +246,10 @@ bool pathMatchsRoute(const std::pair<const char*, const char*>& path, const char
     return (strncmp(path.first, match, path.second - path.first) == 0);
 }
 
-void RSHookServer::process_user_request(IOUserRequestEvent* event)
+void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_size)
 {
+    event->http_request_data[read_size] = '\0'; //Null-terminate the read data
+
     std::pair<const char*, const char*> verb = extractHTTPVerb(event->http_request_data);
     std::pair<const char*, const char*> path = extractHTTPPath(event->http_request_data);
 
@@ -278,26 +283,36 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
         else if(pathMatchsRoute(path, "/helloname")) /* Route type #3 compute response based on input data inline with request */
         {
             size_t datalen = extractHTTPContentLength(event->http_request_data);
-            std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+            if(datalen == 0) {
+                handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+            }
+            else {
+                std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
 
-            auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
-            std::string name = jpayload["name"].get<std::string>();
+                auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+                std::string name = jpayload["name"].get<std::string>();
             
-            char* sendbuff = (char*)s_allocator.allocatebytesp2(256);
-            size_t datasize = std::snprintf(sendbuff, 256, "{\"message\":\"Hello, %s!\"}", name.c_str());
+                char* sendbuff = (char*)s_allocator.allocatebytesp2(256);
+                size_t datasize = std::snprintf(sendbuff, 256, "{\"message\":\"Hello, %s!\"}", name.c_str());
 
-            this->write_user_dynamic_response(event->req->clone(), datasize, sendbuff);
+                this->write_user_dynamic_response(event->req->clone(), datasize, sendbuff);
+            }
         }
         else if(pathMatchsRoute(path, "/fib")) /* Route type #4 compute response based on input data but run on thread-pool for non-blocking */
         {
             size_t datalen = extractHTTPContentLength(event->http_request_data);
-            std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+            if(datalen == 0) {
+                handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+            }
+            else {
+                std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
 
-            auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
-            int64_t value = jpayload["value"].get<int64_t>();
+                auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+                int64_t value = jpayload["value"].get<int64_t>();
 
-            //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
-            this->process_job_request(event, value);
+                //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
+                this->process_job_request(event, value);
+            }
         }
         else
         {
@@ -379,6 +394,8 @@ void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
 
     //TODO: right now we are hacky in arg/result representation and just creating a new thread per request -- later we need to be buffer clean and use a thread-pool
     std::thread tl([value, evt]() {
+        CONSOLE_LOG_PRINT("Thread running... futex is: %u\n", evt->m_futex);
+
         int64_t result_value = fib(value);
 
         evt->result = s_aio_allocator.allocAIOBuffer();
@@ -386,11 +403,13 @@ void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
         
         //Signal completion via futex
         evt->m_futex = 1;
+
+        CONSOLE_LOG_PRINT("Thread done... futex is: %u\n", evt->m_futex);
         syscall(SYS_futex, &evt->m_futex, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1);
     });
     evt->m_tid = tl.get_id();
 
-    io_uring_prep_futex_wait(sqe, &evt->m_futex, evt->m_futex, FUTEX_BITSET_MATCH_ANY, FUTEX_PRIVATE_FLAG, 0);
+    io_uring_prep_futex_wait(sqe, &evt->m_futex, 0, UINT64_MAX, FUTEX_PRIVATE_FLAG, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
@@ -467,7 +486,7 @@ void RSHookServer::runloop()
 
                 switch (event->io_event_type) {
                     case RING_EVENT_IO_CLIENT_READ: {
-                        CONSOLE_LOG_PRINT("Handling client read event -- %x\n", event->req->client_socket);
+                        CONSOLE_LOG_PRINT("Handling user request event -- %x\n", event->req->client_socket);
 
                         if (cqe->res < 0) {
                             CONSOLE_LOG_PRINT("Error reading from client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
@@ -475,7 +494,7 @@ void RSHookServer::runloop()
                             break;
                         }
 
-                        this->process_user_request((IOUserRequestEvent*)event);
+                        this->process_user_request((IOUserRequestEvent*)event, cqe->res);
                         break;
                     }
                     case RING_EVENT_IO_CLIENT_WRITE: {

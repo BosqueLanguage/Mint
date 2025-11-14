@@ -65,7 +65,7 @@ private:
     void handle_error_code(UserRequest* req, RSErrorCode error_code);
 
     void process_user_connect(int listen_socket);
-    void process_user_request(IOUserRequestEvent* event);
+    void process_user_request(IOUserRequestEvent* event, size_t read_size);
 
     //TODO: process a user action request
     void process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize);
