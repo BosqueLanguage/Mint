@@ -8,7 +8,6 @@ constexpr size_t s_alignedsize(size_t size)
     return (size_t)std::pow(2, pv);
 }
 
-
 void* ServerAllocator::m_allocatep2_slow(size_t size)
 {
     /** 
@@ -17,3 +16,15 @@ void* ServerAllocator::m_allocatep2_slow(size_t size)
     size_t processed_size = s_alignedsize(size);
     return aligned_alloc(16, processed_size);
 }
+
+void* AIOAllocator::m_allocate_slow()
+{
+    /** 
+     * Temp using malloc for slow path until we implement custom backing allocation 
+     **/
+    return aligned_alloc(16, AIO_BUFFER_SIZE); //default aio buffer size
+}
+
+
+AIOAllocator s_aio_allocator;
+ServerAllocator s_allocator;

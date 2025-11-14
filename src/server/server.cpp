@@ -74,7 +74,7 @@ int build_file_headers(const char* path, size_t contents_size, char* send_buffer
 void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* data)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOClientWriteEvent* evt = IOClientWriteEvent::create(this->allocator, req, size, data);
+    IOClientWriteEvent* evt = IOClientWriteEvent::create(req, size, data);
 
     io_uring_prep_write(sqe, req->client_socket, data, size, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -82,22 +82,46 @@ void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* 
     this->submission_count++; //track number of submissions for batching
 }
 
-void RSHookServer::write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind, bool should_release)
+void RSHookServer::write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
 
     //Set the headers as the first iovec entry
-    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
     int header_len = build_direct_user_headers(req->route, size, header, dkind);
     evt->iov[0].iov_base = header;
     evt->iov[0].iov_len = header_len;
-    evt->iov_sizes[0] = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
 
     //Set the contents as the second iovec entry
     evt->iov[1].iov_base = (char*)data;
     evt->iov[1].iov_len = size;
-    evt->iov_sizes[1] = should_release ? (int32_t)size : -1;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::None, -1);
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+
+void RSHookServer::write_user_direct_aio_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
+
+    //Set the headers as the first iovec entry
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_direct_user_headers(req->route, size, header, dkind);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::AIO, -1);
 
     io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -108,19 +132,19 @@ void RSHookServer::write_user_direct_wheaders(UserRequest* req, size_t size, con
 void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
 
     //Set the headers as the first iovec entry
-    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
     int header_len = build_file_headers(req->route, size, header);
     evt->iov[0].iov_base = header;
     evt->iov[0].iov_len = header_len;
-    evt->iov_sizes[0] = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
 
     //Set the contents as the second iovec entry
     evt->iov[1].iov_base = (char*)data;
     evt->iov[1].iov_len = size;
-    evt->iov_sizes[1] = should_release ? (int32_t)size : -1;
+    evt->iov_release[1] = should_release ? std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, (int32_t)size) : std::make_pair(IOClientWriteEventVectoredReleaseFlag::None, -1);
 
     io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -131,19 +155,19 @@ void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const
 void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, const char* data)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(this->allocator, req);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
 
     //Set the headers as the first iovec entry
-    char* header = (char*)this->allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
     int header_len = build_file_headers(req->route, size, header);
     evt->iov[0].iov_base = header;
     evt->iov[0].iov_len = header_len;
-    evt->iov_sizes[0] = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
 
     //Set the contents as the second iovec entry
     evt->iov[1].iov_base = (char*)data;
     evt->iov[1].iov_len = size;
-    evt->iov_sizes[1] = (int32_t)size;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, (int32_t)size);
 
     io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -153,7 +177,7 @@ void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, co
 
 void RSHookServer::handle_error_code(UserRequest* req, RSErrorCode error_code)
 {
-    UserRequest* req_clone = req->clone(this->allocator);
+    UserRequest* req_clone = req->clone();
 
     switch(error_code) {
     case RSErrorCode::MALFORMED_REQUEST:
@@ -174,8 +198,8 @@ void RSHookServer::handle_error_code(UserRequest* req, RSErrorCode error_code)
 void RSHookServer::process_user_connect(int listen_socket)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    UserRequest* req = UserRequest::create(this->allocator, listen_socket, nullptr, 0, nullptr);
-    IOUserRequestEvent* evt = IOUserRequestEvent::create(this->allocator, req, (char*)this->allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
+    UserRequest* req = UserRequest::create(listen_socket, nullptr, 0, nullptr);
+    IOUserRequestEvent* evt = IOUserRequestEvent::create(req, (char*)s_allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
 
     io_uring_prep_read(sqe, listen_socket, evt->http_request_data, HTTP_MAX_REQUEST_BUFFER_SIZE, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -224,7 +248,7 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
     std::pair<const char*, const char*> verb = extractHTTPVerb(event->http_request_data);
     std::pair<const char*, const char*> path = extractHTTPPath(event->http_request_data);
 
-    event->req->route = this->allocator.strcopyp2(path.first, path.second - path.first);
+    event->req->route = s_allocator.strcopyp2(path.first, path.second - path.first);
     event->req->argdata = nullptr;
 
     if (strncmp(verb.first, "get", verb.second - verb.first) == 0)
@@ -236,12 +260,12 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
             std::pair<const char*, size_t> cached_data = this->file_cache_mgr.tryGet(event->req->route);
             if(cached_data.first != nullptr) {
                 CONSOLE_LOG_PRINT("Cache hit for %s\n", event->req->route);
-                this->send_cache_file_content(event->req->clone(this->allocator), cached_data.second, cached_data.first);
+                this->send_cache_file_content(event->req->clone(), cached_data.second, cached_data.first);
             }
             else {
                 //TODO: better base lookup
-                const char* fpath = (const char*)this->allocator.allocatebytesp2(s_strlen("/home/mark/Code/RSHook/build/static") + s_strlen("/sample.json") + 1);
-                sprintf((char*)fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
+                char* fpath = (char*)s_allocator.allocatebytesp2(s_strlen("/home/mark/Code/RSHook/build/static") + s_strlen("/sample.json") + 1);
+                sprintf(fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
 
                 this->process_http_file_access(event, fpath, true);
             }
@@ -249,7 +273,7 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
         else if(pathMatchsRoute(path, "/hello")) /* Route type #2 immediate response of fixed (small) values */
         {
             const char* response = "{\"message\": \"Hello, world!\"}";
-            this->send_immediate_fixed_content(event->req->clone(this->allocator), s_strlen(response), response, "json");
+            this->send_immediate_fixed_content(event->req->clone(), s_strlen(response), response, "json");
         }
         else if(pathMatchsRoute(path, "/helloname")) /* Route type #3 compute response based on input data inline with request */
         {
@@ -259,10 +283,10 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
             auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
             std::string name = jpayload["name"].get<std::string>();
             
-            char* sendbuff = (char*)this->allocator.allocatebytesp2(256);
+            char* sendbuff = (char*)s_allocator.allocatebytesp2(256);
             size_t datasize = std::snprintf(sendbuff, 256, "{\"message\":\"Hello, %s!\"}", name.c_str());
 
-            this->write_user_dynamic_response(event->req->clone(this->allocator), datasize, sendbuff);
+            this->write_user_dynamic_response(event->req->clone(), datasize, sendbuff);
         }
         else if(pathMatchsRoute(path, "/fib")) /* Route type #4 compute response based on input data but run on thread-pool for non-blocking */
         {
@@ -273,7 +297,7 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
             int64_t value = jpayload["value"].get<int64_t>();
 
             //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
-            xxxx;
+            this->process_job_request(event, value);
         }
         else
         {
@@ -291,7 +315,7 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event)
 void RSHookServer::process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileStatEvent* evt = IOFileStatEvent::create(this->allocator, req, file_path, memoize);
+    IOFileStatEvent* evt = IOFileStatEvent::create(req, file_path, memoize);
 
     io_uring_prep_statx(sqe, AT_FDCWD, file_path, AT_STATX_SYNC_AS_STAT, STATX_ALL, &evt->stat_buf);
     io_uring_sqe_set_data(sqe, evt);
@@ -302,7 +326,7 @@ void RSHookServer::process_http_file_access(IOUserRequestEvent* req, const char*
 void RSHookServer::process_fstat_result(IOFileStatEvent* event)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileOpenEvent* evt = IOFileOpenEvent::create(this->allocator, event, event->stat_buf, event->memoize);
+    IOFileOpenEvent* evt = IOFileOpenEvent::create(event, event->stat_buf, event->memoize);
 
     io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -313,7 +337,7 @@ void RSHookServer::process_fstat_result(IOFileStatEvent* event)
 void RSHookServer::process_fopen_result(IOFileOpenEvent* event, int file_descriptor)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileReadEvent* evt = IOFileReadEvent::create(this->allocator, event, file_descriptor, event->stat_buf.stx_size, (char*)this->allocator.allocatebytesp2(event->stat_buf.stx_size + 1), event->memoize);
+    IOFileReadEvent* evt = IOFileReadEvent::create(event, file_descriptor, event->stat_buf.stx_size, (char*)s_allocator.allocatebytesp2(event->stat_buf.stx_size + 1), event->memoize);
 
     io_uring_prep_read(sqe, file_descriptor, evt->file_data, evt->size, 0);
     io_uring_sqe_set_data(sqe, evt);
@@ -329,13 +353,13 @@ void RSHookServer::process_fread_result(IOFileReadEvent* event)
     ////
     //Setup the response to the user now that we have the file data and handle any caching
     //Right now everything is cached permanently 
-    const char* cdata = this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), this->allocator.strcopyp2(event->file_data), event->size);
-    this->send_cache_file_content(event->req->clone(this->allocator), event->size, cdata);
+    const char* cdata = this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), s_allocator.strcopyp2(event->file_data), event->size);
+    this->send_cache_file_content(event->req->clone(), event->size, cdata);
 
     ////
     //Setup the close event to clean up the file descriptor
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOFileCloseEvent* evt = IOFileCloseEvent::create(this->allocator, event);
+    IOFileCloseEvent* evt = IOFileCloseEvent::create(event);
 
     io_uring_prep_close(sqe, event->file_fd);
     io_uring_sqe_set_data(sqe, evt);
@@ -348,23 +372,40 @@ void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
     //no continuation as of now -- just stop processing
 }
 
-void RSHookServer::process_job_request(IOUserRequestEvent* event)
+void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOJobCompleteEvent* evt = IOJobCompleteEvent::create(event);
 
-    io_uring_prep_futex_wait(sqe, nullptr, FUTEX_WAIT, 0, nullptr, 0, 0);
-    xxxx;
+    //TODO: right now we are hacky in arg/result representation and just creating a new thread per request -- later we need to be buffer clean and use a thread-pool
+    std::thread tl([value, evt]() {
+        int64_t result_value = fib(value);
+
+        evt->result = s_aio_allocator.allocAIOBuffer();
+        evt->size = std::snprintf((char*)evt->result, AIO_BUFFER_SIZE, "{\"value\": %ld}", result_value);
+        
+        //Signal completion via futex
+        evt->m_futex = 1;
+        syscall(SYS_futex, &evt->m_futex, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1);
+    });
+    evt->m_tid = tl.get_id();
+
+    io_uring_prep_futex_wait(sqe, &evt->m_futex, evt->m_futex, FUTEX_BITSET_MATCH_ANY, FUTEX_PRIVATE_FLAG, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+    tl.detach();
 }
 
 void RSHookServer::process_job_complete(IOJobCompleteEvent* event)
 {
-    char* data = event->result;
+    uint8_t* data = event->result;
     event->result = nullptr;
-    
-    this->send_compute_content(event->req->clone(this->allocator), event->size, data, "json");
+
+    this->send_compute_content(event->req->clone(), event->size, (char*)data, "json");
 }
 
-RSHookServer::RSHookServer() : port(0), server_socket(-1), submission_count(0)
+RSHookServer::RSHookServer() : port(0), server_socket(-1), ring(), submission_count(0), file_cache_mgr()
 {
     ;
 }
@@ -379,6 +420,7 @@ void RSHookServer::startup(int port, int server_socket)
     this->port = port;
     this->server_socket = server_socket;
 
+    this->submission_count = 0;
     io_uring_queue_init(QUEUE_DEPTH, &this->ring, 0);
 }
 
@@ -389,7 +431,7 @@ void RSHookServer::shutdown()
 
     io_uring_queue_exit(&this->ring);
 
-    this->file_cache_mgr.clear(this->allocator);
+    this->file_cache_mgr.clear();
 
     CONSOLE_STATUS_PRINT("Server shutdown complete.\n");
 }
@@ -398,7 +440,7 @@ void RSHookServer::runloop()
 {
     CONSOLE_STATUS_PRINT("Server starting...\n");
 
-    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
     io_uring_prep_multishot_accept(sqe, this->server_socket, nullptr, nullptr, 0);
 
     io_uring_sqe_set_data64(sqe, RING_EVENT_TYPE_ACCEPT);
@@ -526,7 +568,7 @@ void RSHookServer::runloop()
                     }
                 }
 
-                event->release(this->allocator);
+                event->release();
             }
 
             io_uring_cqe_seen(&this->ring, cqe);

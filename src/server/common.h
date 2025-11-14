@@ -8,6 +8,13 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <unistd.h>
+
+#include <thread>
+#include <stdatomic.h>
+#include <linux/futex.h>
+
+#include "liburing.h"
 
 #define ENABLE_CONSOLE_STATUS 1
 #define ENABLE_CONSOLE_LOGGING 1

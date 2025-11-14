@@ -9,10 +9,6 @@
 #include <sys/stat.h>
 #include <netinet/in.h>
 
-#include <stdatomic.h>
-#include <linux/futex.h>
-#include <liburing.h>
-
 #define RING_EVENT_TYPE_IO 0x0
 #define RING_EVENT_TYPE_ACCEPT 0x1
 
@@ -37,17 +33,16 @@ class RSHookServer
 {
 private:
     int port;
-
     int server_socket;
-    struct io_uring ring;
 
+    struct io_uring ring;
     size_t submission_count;
 
-    ServerAllocator allocator;
     FileCacheManager file_cache_mgr;
 
     void write_user_direct(UserRequest* req, size_t size, const char* data);
-    void write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind, bool should_release);
+    void write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind);
+    void write_user_direct_aio_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind);
     void write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release);
     void write_user_dynamic_response(UserRequest* req, size_t size, const char* data);
 
@@ -56,11 +51,11 @@ private:
     }
 
     void send_immediate_fixed_content(UserRequest* req,  size_t size, const char* data, const char* dkind) {
-        this->write_user_direct_wheaders(req, size, data, dkind, false);
+        this->write_user_direct_wheaders(req, size, data, dkind);
     }
 
     void send_compute_content(UserRequest* req,  size_t size, const char* data, const char* dkind) {
-        this->write_user_direct_wheaders(req, size, data, dkind, true);
+        this->write_user_direct_aio_wheaders(req, size, data, dkind);
     }
 
     void send_cache_file_content(UserRequest* req, size_t size, const char* data) {
@@ -80,7 +75,7 @@ private:
     void process_fread_result(IOFileReadEvent* event);
     void process_fclose_result(IOFileCloseEvent* event);
 
-    void process_job_request(IOUserRequestEvent* event);
+    void process_job_request(IOUserRequestEvent* event, int64_t value);
     void process_job_complete(IOJobCompleteEvent* event);
 
 public:

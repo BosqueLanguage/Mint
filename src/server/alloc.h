@@ -5,6 +5,8 @@
 #define FREE_LIST_GET_NEXT(L) (*(void**)(L))
 #define FREE_LIST_SET_NEXT(L, P) ((*(void**)(L)) = P)
 
+#define AIO_BUFFER_SIZE 8192
+
 constexpr size_t s_binidx(size_t size)
 {
     return std::ceil(std::log2(size));
@@ -100,3 +102,58 @@ public:
         this->m_allocs[bin] = ptr;
     }
 };
+
+class AIOAllocator
+{
+private:
+    void** m_allocs;
+    std::mutex g_pages_mutex;
+
+    void* m_allocate_slow();
+public:
+    AIOAllocator(): m_allocs(nullptr), g_pages_mutex()
+    { 
+        ; 
+    }
+    
+    ~AIOAllocator()
+    { 
+        void* current = this->m_allocs;
+        while(current != nullptr) {
+            void* next = FREE_LIST_GET_NEXT(current);
+            free(current);
+            current = next;
+        }
+    }
+
+    uint8_t* allocAIOBuffer()
+    {
+        std::lock_guard<std::mutex> lock(this->g_pages_mutex);
+
+        void* res = this->m_allocs;
+        if(res != nullptr) {
+            *this->m_allocs = FREE_LIST_GET_NEXT(res);
+        }
+        else {
+            res = this->m_allocate_slow();
+        }
+
+        return (uint8_t*)res;
+    }
+
+    void freeAIOBuffer(uint8_t* ptr)
+    {
+        if(ptr == nullptr) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(this->g_pages_mutex);
+
+        FREE_LIST_SET_NEXT(ptr, *this->m_allocs);
+        *this->m_allocs = ptr;
+    }
+};
+
+extern AIOAllocator s_aio_allocator;
+extern ServerAllocator s_allocator;
+

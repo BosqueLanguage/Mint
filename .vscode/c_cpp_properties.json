@@ -19,7 +19,10 @@
                 "-Wuninitialized ",
                 "-Werror ",
                 "-std=gnu++20"
-            ]
+            ],
+            "recursiveIncludes": {
+                "priority": "beforeSystemIncludes"
+            }
         }
     ],
     "version": 4

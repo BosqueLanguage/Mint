@@ -89,11 +89,11 @@ public:
     FileCacheManager() { ; }
     ~FileCacheManager() { ; }
 
-    void clear(ServerAllocator& allocator)
+    void clear()
     {
         for(auto& pair : this->memoizedsmall) {
             const FileCachePermanentEntry& entry = pair.second;
-            allocator.freebytesp2((uint8_t*)entry.m_data, entry.m_size);
+            s_allocator.freebytesp2((uint8_t*)entry.m_data, entry.m_size);
         }
         this->memoizedsmall.clear();
     }
