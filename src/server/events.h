@@ -291,20 +291,22 @@ class IOJobCompleteEvent : public IOEvent
 {
 public:
     std::thread::id m_tid;
-    uint32_t m_futex;
+    int rpipe;
+    int wpipe;
+    char status[4];
 
     size_t size;
     uint8_t* result;
     
-    IOJobCompleteEvent(UserRequest* req, size_t size, uint8_t* result): IOEvent(RING_EVENT_JOB_COMPLETE, req), m_tid(), m_futex(0), size(size), result(result) { ; }
+    IOJobCompleteEvent(UserRequest* req, int rpipe, int wpipe, size_t size, uint8_t* result): IOEvent(RING_EVENT_JOB_COMPLETE, req), m_tid(), rpipe(rpipe), wpipe(wpipe), status{0}, size(size), result(result) { ; }
     virtual ~IOJobCompleteEvent() = default;
 
-    static IOJobCompleteEvent* create(IOUserRequestEvent* event)
+    static IOJobCompleteEvent* create(IOUserRequestEvent* event, int rpipe, int wpipe)
     {
         auto req = event->req;
         event->req = nullptr; //transfer ownership
         
-        return new (s_allocator.allocate<IOJobCompleteEvent>()) IOJobCompleteEvent(req, 0, nullptr);
+        return new (s_allocator.allocate<IOJobCompleteEvent>()) IOJobCompleteEvent(req, rpipe, wpipe, 0, nullptr);
     }
 
     void release() override

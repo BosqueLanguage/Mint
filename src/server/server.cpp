@@ -390,26 +390,28 @@ void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
 void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
-    IOJobCompleteEvent* evt = IOJobCompleteEvent::create(event);
+
+    //setup a uni-pipe to signal the thread completion
+    int pfd[2] = {0};
+    pipe(pfd);
+
+    IOJobCompleteEvent* evt = IOJobCompleteEvent::create(event, pfd[0], pfd[1]);
 
     //TODO: right now we are hacky in arg/result representation and just creating a new thread per request -- later we need to be buffer clean and use a thread-pool
     std::thread tl([value, evt]() {
-        CONSOLE_LOG_PRINT("Thread running... futex is: %u\n", evt->m_futex);
+        CONSOLE_LOG_PRINT("Thread running...\n");
 
         int64_t result_value = fib(value);
 
         evt->result = s_aio_allocator.allocAIOBuffer();
         evt->size = std::snprintf((char*)evt->result, AIO_BUFFER_SIZE, "{\"value\": %ld}", result_value);
-        
-        //Signal completion via futex
-        evt->m_futex = 1;
 
-        CONSOLE_LOG_PRINT("Thread done... futex is: %u\n", evt->m_futex);
-        syscall(SYS_futex, &evt->m_futex, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1);
+        CONSOLE_LOG_PRINT("Thread done\n");
+        write(evt->wpipe, "T", 1); //wake up the io_uring wait
     });
     evt->m_tid = tl.get_id();
 
-    io_uring_prep_futex_wait(sqe, &evt->m_futex, 0, UINT64_MAX, FUTEX_PRIVATE_FLAG, 0);
+    io_uring_prep_read(sqe, evt->rpipe, evt->status, 1, 0);
     io_uring_sqe_set_data(sqe, evt);
 
     this->submission_count++; //track number of submissions for batching
@@ -420,6 +422,9 @@ void RSHookServer::process_job_complete(IOJobCompleteEvent* event)
 {
     uint8_t* data = event->result;
     event->result = nullptr;
+
+    close(event->rpipe);
+    close(event->wpipe);
 
     this->send_compute_content(event->req->clone(), event->size, (char*)data, "json");
 }
