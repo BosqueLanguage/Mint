@@ -391,7 +391,7 @@ void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
 {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
 
-    //setup a uni-pipe to signal the thread completion
+    //setup a uni-pipe to signal the thread completion -- depending on thread pool we might want to save these per thread too
     int pfd[2] = {0};
     pipe(pfd);
 
