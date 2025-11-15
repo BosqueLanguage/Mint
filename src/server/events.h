@@ -271,7 +271,7 @@ public:
         }
 
         for (int i = 0; i < 2; i++) {
-            if (this->iov_release[i].first != IOClientWriteEventVectoredReleaseFlag::None) {
+            if (this->iov_release[i].first == IOClientWriteEventVectoredReleaseFlag::None) {
                 ;
             }
             else {

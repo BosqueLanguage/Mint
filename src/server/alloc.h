@@ -106,7 +106,7 @@ public:
 class AIOAllocator
 {
 private:
-    void** m_allocs;
+    void* m_allocs;
     std::mutex g_pages_mutex;
 
     void* m_allocate_slow();
@@ -132,7 +132,7 @@ public:
 
         void* res = this->m_allocs;
         if(res != nullptr) {
-            *this->m_allocs = FREE_LIST_GET_NEXT(res);
+            this->m_allocs = FREE_LIST_GET_NEXT(res);
         }
         else {
             res = this->m_allocate_slow();
@@ -150,7 +150,7 @@ public:
         std::lock_guard<std::mutex> lock(this->g_pages_mutex);
 
         FREE_LIST_SET_NEXT(ptr, this->m_allocs);
-        *this->m_allocs = ptr;
+        this->m_allocs = ptr;
     }
 };
 

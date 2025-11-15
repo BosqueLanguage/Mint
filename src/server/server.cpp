@@ -479,7 +479,7 @@ void RSHookServer::runloop()
         int ret = io_uring_wait_cqe(&this->ring, &cqe);
         if (ret < 0) {
             CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
-            assert(false);
+            continue;
         }
 
         while(1) {

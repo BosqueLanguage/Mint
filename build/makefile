@@ -34,9 +34,6 @@ SERVER_SOURCES=$(SERVER_DIR)server.cpp $(SERVER_DIR)alloc.cpp $(SERVER_DIR)commo
 SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)alloc.o $(OUT_OBJ)common.o
 
 JSON_INCLUDES=-I $(BUILD_DIR)include/json/
-URING_INCLUDES=-I $(BUILD_DIR)include/liburing/headers/
-
-URING_PATH=$(BUILD_DIR)include/liburing/
 
 # MAKEFLAGS += -j4
 
@@ -44,7 +41,7 @@ all: $(OUT_EXE)rshook
 
 $(OUT_EXE)rshook: $(SERVER_OBJS) $(SERVER_HEADERS) $(APPLICATION_OBJS) $(APPLICATION_HEADERS) $(SRC_DIR)rshook.cpp
 	@mkdir -p $(OUT_EXE)
-	$(CPP) $(CPPFLAGS) $(APPLICATION_FLAGS) $(URING_INCLUDES) $(JSON_INCLUDES) -L$(URING_PATH) -o $(OUT_EXE)rshook $(SERVER_OBJS) $(APPLICATION_OBJS) $(SRC_DIR)rshook.cpp -luring
+	$(CPP) $(CPPFLAGS) $(APPLICATION_FLAGS) $(JSON_INCLUDES) -o $(OUT_EXE)rshook $(SERVER_OBJS) $(APPLICATION_OBJS) $(SRC_DIR)rshook.cpp -luring
 
 $(OUT_OBJ)apis.o: $(APPLICATION_HEADERS) $(APPLICATION_DIR)apis.cpp
 	@mkdir -p $(OUT_OBJ)
@@ -52,7 +49,7 @@ $(OUT_OBJ)apis.o: $(APPLICATION_HEADERS) $(APPLICATION_DIR)apis.cpp
 
 $(OUT_OBJ)server.o: $(SERVER_HEADERS) $(APPLICATION_HEADERS) $(SERVER_DIR)server.cpp
 	@mkdir -p $(OUT_OBJ)
-	$(CPP) $(CPPFLAGS) $(APPLICATION_FLAGS) $(URING_INCLUDES) $(JSON_INCLUDES) -o $(OUT_OBJ)server.o -c $(SERVER_DIR)server.cpp
+	$(CPP) $(CPPFLAGS) $(APPLICATION_FLAGS) $(JSON_INCLUDES) -o $(OUT_OBJ)server.o -c $(SERVER_DIR)server.cpp
 
 $(OUT_OBJ)alloc.o: $(SERVER_HEADERS) $(SERVER_DIR)alloc.cpp
 	@mkdir -p $(OUT_OBJ)
