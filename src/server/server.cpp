@@ -5,6 +5,8 @@
 #include "json.hpp"
 typedef nlohmann::json json;
 
+#include <libgen.h> // For dirname
+
 #define HEADER_BUFFER_MAX 512
 #define QUEUE_DEPTH 256
 
@@ -19,6 +21,40 @@ typedef nlohmann::json json;
 #else
 #define CONSOLE_LOG_PRINT(...)
 #endif
+
+std::string getExecutablePath() {
+    std::vector<char> buf(1024);
+    ssize_t len = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+    if (len != -1) {
+        buf[len] = '\0'; // Null-terminate the string
+        return std::string(buf.data());
+    }
+    return ""; // Error or not found
+}
+
+std::string getExecutableDirectory() {
+    std::string fullPath = getExecutablePath();
+    if (!fullPath.empty()) {
+        // dirname modifies the buffer, so a copy is needed
+        char* path_copy = new char[fullPath.length() + 1];
+        strcpy(path_copy, fullPath.c_str());
+        std::string dir = dirname(path_copy);
+        delete[] path_copy;
+        return dir;
+    }
+    return "";
+}
+
+const char* get_filename_ext(const char* filename)
+{
+    const char* dot = strrchr(filename, '.');
+    if (!dot || dot == filename) {
+        return "";
+    }
+    else {
+        return dot + 1;
+    }
+}
 
 const char* get_header_content_type(const char* extstr)
 {
@@ -44,6 +80,9 @@ const char* get_header_content_type(const char* extstr)
         return "Content-Type: text/css\r\n";
     }
     else if (strcmp("txt", extstr) == 0) {
+        return "Content-Type: text/plain\r\n";
+    }
+    else if (strcmp("md", extstr) == 0) {
         return "Content-Type: text/plain\r\n";
     }
     else if (strcmp("json", extstr) == 0) {
@@ -258,9 +297,14 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_s
 
     if (strncmp(verb.first, "get", verb.second - verb.first) == 0)
     {
-        /** TODO: wan't a known URI for hyper-agent discovery **/
+        if(pathMatchsRoute(path, "/hagentic.md")) 
+        {
+            //A known route for hyper-agentic description
 
-        if(pathMatchsRoute(path, "/sample.json")) /*Route type #1 file service -- static (permanent) files or basic caching as resources*/
+            const char* response = "# Agentic Server\r\n\r\nThis is a static markdown file served by the Agentic server that describes the available operations in HATEOAS model (aka skills) -- each operation can also be queried in more detail on a sig specific info URI.\r\n";
+            this->send_static_content(event->req->clone(), response);
+        }
+        else if(pathMatchsRoute(path, "/sample.json")) /*Route type #1 file service -- static (permanent) files or basic caching as resources*/
         {
             std::pair<const char*, size_t> cached_data = this->file_cache_mgr.tryGet(event->req->route);
             if(cached_data.first != nullptr) {
@@ -269,8 +313,8 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_s
             }
             else {
                 //TODO: better base lookup
-                char* fpath = (char*)s_allocator.allocatebytesp2(s_strlen("/home/mark/Code/RSHook/build/static") + s_strlen("/sample.json") + 1);
-                sprintf(fpath, "%s%s", "/home/mark/Code/RSHook/build/static", "/sample.json");
+                char* fpath = (char*)s_allocator.allocatebytesp2(s_strlen(this->resource_root) + s_strlen("/sample.json") + 1);
+                sprintf(fpath, "%s%s", this->resource_root, "/sample.json");
 
                 this->process_http_file_access(event, fpath, true);
             }
@@ -443,6 +487,9 @@ void RSHookServer::startup(int port, int server_socket)
 {
     this->port = port;
     this->server_socket = server_socket;
+
+    std::string resourcedir = getExecutableDirectory() + "/static";
+    this->resource_root = s_allocator.strcopyp2(resourcedir.c_str());
 
     this->submission_count = 0;
     io_uring_queue_init(QUEUE_DEPTH, &this->ring, 0);

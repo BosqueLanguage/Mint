@@ -34,6 +34,7 @@ class RSHookServer
 private:
     int port;
     int server_socket;
+    const char* resource_root;
 
     struct io_uring ring;
     size_t submission_count;

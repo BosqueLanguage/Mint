@@ -21,6 +21,4 @@
 
 #define HTTP_MAX_REQUEST_BUFFER_SIZE 8192
 
-const char* get_filename_ext(const char* filename);
-
 size_t s_strlen(const char* str);
