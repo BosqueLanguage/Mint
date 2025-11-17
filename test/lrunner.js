@@ -5,14 +5,15 @@ const http = require('http');
 /**
  * 
  * @param {string[]} endpoints 
- * @returns {Object<string, {totalTime: number, slow10: number[], count: number}>}
+ * @returns {Object<string, {totalTime: number, lastring: number[], lrpos: number, count: number}>}
  */
 function createTimingInfo(endpoints) {
     let timingInfo = {};
     for(let i = 0; i < endpoints.length; i++) {
         timingInfo[endpoints[i]] = {
             totalTime: 0,
-            slow10: [],
+            lastring: [],
+            lrpos: 0,
             count: 0
         };
     }
@@ -20,25 +21,30 @@ function createTimingInfo(endpoints) {
 }
 
 /**
- * @param {Object<string, {totalTime: number, slow10: number[], count: number}>} timingInfo 
+ * @param {Object<string, {totalTime: number, lastring: number[], lrpos: number, count: number}>} timingInfo 
  */
 function printTimings(timingInfo) {
     for(const endpoint in timingInfo) {
         const info = timingInfo[endpoint];
-        const avgTime = info.count > 0 ? (info.totalTime / info.count) : 0;
-        
-        const slows = info.slow10.sort((a, b) => b - a).slice(Math.ceil(info.count * 0.1)).shift() || 0;
 
         console.log(`Endpoint: ${endpoint}`);
         console.log(`  Total Requests: ${info.count}`);
-        console.log(`  Average Time: ${avgTime.toFixed(2)} ms`);
-        console.log(`  P90: ${slows} ms`);
+
+        if(info.count !== 0) {
+            const avgTime = info.count > 0 ? (info.totalTime / info.count) : 0;
+
+            const pct10 = Math.min(10, Math.floor(info.lastring.length * 0.9));
+            const slows = info.lastring.sort((a, b) => b - a)[info.lastring.length - pct10];
+
+            console.log(`  Average Time: ${avgTime.toFixed(2)} ms`);
+            console.log(`  P90: ${slows} ms`);
+        }
     }
 }
 
 /**
  * 
- * @param {Object<string, {totalTime: number, slow10: number[], count: number}>} timingInfo 
+ * @param {Object<string, {totalTime: number, lastring: number[], lrpos: number, count: number}>} timingInfo 
  * @param {string} endpoint 
  * @param {number} startTime 
  * @param {number} endTime 
@@ -49,23 +55,13 @@ function recordTiming(timingInfo, endpoint, startTime, endTime) {
     info.totalTime += duration;
     info.count += 1;
 
-    // Maintain a list of the 10 slowest times
-    if(info.slow10.length < 10) {
-        info.slow10.push(duration);
+    // Maintain a list of the 1000 most recent times
+    if(info.lastring.length < 1000) {
+        info.lastring.push(duration);
     }
     else {
-        let minidx = 0;
-        let maxdiff = 0;
-        for(let i = 0; i < info.slow10.length; i++) {
-            if(info.slow10[i] < duration && duration - info.slow10[i] > maxdiff) {
-                minidx = i;
-                maxdiff = duration - info.slow10[i];
-            }
-        }
-
-        if(maxdiff > 0) {
-            info.slow10[minidx] = duration;
-        }
+        info.lastring[info.lrpos] = duration;
+        info.lrpos = (info.lrpos + 1) % 1000;
     }
 }
 

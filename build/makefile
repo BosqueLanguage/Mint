@@ -35,7 +35,7 @@ SERVER_OBJS=$(OUT_OBJ)server.o $(OUT_OBJ)alloc.o $(OUT_OBJ)common.o
 
 JSON_INCLUDES=-I $(BUILD_DIR)include/json/
 
-# MAKEFLAGS += -j4
+MAKEFLAGS += -j4
 
 all: $(OUT_EXE)rshook
 

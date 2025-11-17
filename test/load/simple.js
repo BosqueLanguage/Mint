@@ -45,7 +45,10 @@ const ops = [
 let completed = 0;
 let errors = 0;
 
-function runLoad() {
+function runLoad(warmup) {
+    completed = 0;
+    errors = 0;
+    
     const endpoints = ops.map(op => op.endpoint);
     const timings = runner.createTimingInfo(endpoints);
 
@@ -54,7 +57,7 @@ function runLoad() {
         mops = mops.concat(ops);
     }
     const total = mops.length;
-    runner.runActions('localhost', 8000, 10, timings, mops, (err, results) => {
+    runner.runActions('localhost', 8000, 1000, timings, mops, (err, results) => {
         completed++;
         if (err) {
             errors++;
@@ -66,9 +69,15 @@ function runLoad() {
         if (completed === total) {
             console.log(`Load test completed: ${completed} runs, ${errors} errors.`);
 
-            runner.printTimings(timings);
+            if(warmup) {
+                console.log('Warmup complete. Starting timed run...');
+                runLoad(false);
+            }
+            else {
+                runner.printTimings(timings);
+            }
         }
     });
 }
 
-runLoad();
+runLoad(true);
