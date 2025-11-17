@@ -32,13 +32,13 @@ std::string getExecutablePath() {
     return ""; // Error or not found
 }
 
-std::string getExecutableDirectory() {
+std::string getStaticRootDirectory() {
     std::string fullPath = getExecutablePath();
     if (!fullPath.empty()) {
         // dirname modifies the buffer, so a copy is needed
         char* path_copy = new char[fullPath.length() + 1];
         strcpy(path_copy, fullPath.c_str());
-        std::string dir = dirname(path_copy);
+        std::string dir = dirname(dirname(path_copy));
         delete[] path_copy;
         return dir;
     }
@@ -295,9 +295,15 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_s
     event->req->route = s_allocator.strcopyp2(path.first, path.second - path.first);
     event->req->argdata = nullptr;
 
-    if (strncmp(verb.first, "get", verb.second - verb.first) == 0)
+    //TODO: standard support for common tasks
+    //    - Middleware -- auth, redirect, compression, etc.
+    //    - Logging/Perf -- also TTD, and other novel diagnostics
+    //    - Status endpoints for tasks (/endpoint/hyper-status/{taskid})
+    //    - Cancellation support
+
+    if (strncmp(verb.first, "get", verb.second - verb.first) == 0 || strncmp(verb.first, "GET", verb.second - verb.first) == 0)
     {
-        if(pathMatchsRoute(path, "/hagentic.md")) 
+        if(pathMatchsRoute(path, "/hyper-agentic.md")) 
         {
             //A known route for hyper-agentic description
 
@@ -312,7 +318,6 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_s
                 this->send_cache_file_content(event->req->clone(), cached_data.second, cached_data.first);
             }
             else {
-                //TODO: better base lookup
                 char* fpath = (char*)s_allocator.allocatebytesp2(s_strlen(this->resource_root) + s_strlen("/sample.json") + 1);
                 sprintf(fpath, "%s%s", this->resource_root, "/sample.json");
 
@@ -337,13 +342,18 @@ void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_s
                 std::string name = jpayload["name"].get<std::string>();
             
                 char* sendbuff = (char*)s_allocator.allocatebytesp2(256);
-                size_t datasize = std::snprintf(sendbuff, 256, "{\"message\":\"Hello, %s!\"}", name.c_str());
+                size_t datasize = std::snprintf(sendbuff, 256, "{\"message\": \"Hello, %s!\"}", name.c_str());
 
                 this->write_user_dynamic_response(event->req->clone(), datasize, sendbuff);
             }
         }
         else if(pathMatchsRoute(path, "/fib")) /* Route type #4 compute response based on input data but run on thread-pool for non-blocking */
         {
+            //TODO: more task specialization
+            //   - Allow priority support
+            //   - Allow for timeouts too
+            //   - Result processing options (streaming with status updates, status endpoints, or just blocking)
+
             size_t datalen = extractHTTPContentLength(event->http_request_data);
             if(datalen == 0) {
                 handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
@@ -437,11 +447,15 @@ void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
 
     //setup a uni-pipe to signal the thread completion -- depending on thread pool we might want to save these per thread too
     int pfd[2] = {0};
-    pipe(pfd);
+    int pok = pipe(pfd);
+
+    assert(pok == 0);
 
     IOJobCompleteEvent* evt = IOJobCompleteEvent::create(event, pfd[0], pfd[1]);
 
     //TODO: right now we are hacky in arg/result representation and just creating a new thread per request -- later we need to be buffer clean and use a thread-pool
+    //    - Also backpresure - both dropping requests and providing a standard way to check on load (maybe endpoint)
+    //    - Would be cool to use Bosque to support migration of tasks too
     std::thread tl([value, evt]() {
         CONSOLE_LOG_PRINT("Thread running...\n");
 
@@ -451,7 +465,8 @@ void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
         evt->size = std::snprintf((char*)evt->result, AIO_BUFFER_SIZE, "{\"value\": %ld}", result_value);
 
         CONSOLE_LOG_PRINT("Thread done\n");
-        write(evt->wpipe, "T", 1); //wake up the io_uring wait
+        auto bw = write(evt->wpipe, "T", 1); //wake up the io_uring wait
+        assert(bw == 1);
     });
     evt->m_tid = tl.get_id();
 
@@ -488,11 +503,13 @@ void RSHookServer::startup(int port, int server_socket)
     this->port = port;
     this->server_socket = server_socket;
 
-    std::string resourcedir = getExecutableDirectory() + "/static";
+    std::string resourcedir = getStaticRootDirectory() + "/static";
     this->resource_root = s_allocator.strcopyp2(resourcedir.c_str());
 
     this->submission_count = 0;
     io_uring_queue_init(QUEUE_DEPTH, &this->ring, 0);
+
+    //TODO: want to allow pre-launch setup
 }
 
 void RSHookServer::shutdown()

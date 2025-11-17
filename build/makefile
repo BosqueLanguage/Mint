@@ -12,14 +12,14 @@ SERVER_DIR=$(SRC_DIR)server/
 RSHOOK_TEST_DIR=$(MAKE_PATH)/../test/
 
 #dev is default, for another flavor : make BUILD=release or debug
-BUILD := debug
+BUILD := release
 
 CPP=g++ 
 CPP_STDFLAGS=-Wall -Wextra -Wno-unused-parameter -Wuninitialized -Werror -std=gnu++20
 
 CPPFLAGS_OPT.debug=-O0 -g -ggdb -fno-omit-frame-pointer -fsanitize=address
 CPPFLAGS_OPT.dev=-O0 -g -ggdb -fno-omit-frame-pointer
-CPPFLAGS_OPT.release=-O3 -march=x86-64-v3
+CPPFLAGS_OPT.release=-O2 -march=x86-64-v3
 CPPFLAGS=${CPPFLAGS_OPT.${BUILD}} ${CPP_STDFLAGS}
 CPPFLAGS_TEST=${CPPFLAGS_OPT.dev} ${CPP_STDFLAGS}
 

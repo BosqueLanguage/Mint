@@ -16,7 +16,9 @@ private:
     char m_path[MAX];
 public:
     FileCacheSmallKey() : m_len(0), m_path{} { ; }
-    FileCacheSmallKey(const char* path, size_t len) : m_len(len), m_path{} { strncpy(this->m_path, path, MAX); }
+    FileCacheSmallKey(const char* path, size_t len) : m_len(len), m_path{} { 
+        strncpy(this->m_path, path, MAX - 1); 
+    }
 
     FileCacheSmallKey(const FileCacheSmallKey& other) : m_len(other.m_len), m_path{} 
     { 
@@ -28,7 +30,7 @@ public:
     {
         if(this != &other) {
             this->m_len = other.m_len;
-            strncpy(this->m_path, other.m_path, MAX);
+            strncpy(this->m_path, other.m_path, MAX - 1);
         }
 
         return *this;
