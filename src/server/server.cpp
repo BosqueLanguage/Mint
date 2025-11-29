@@ -1,0 +1,684 @@
+#include "server.h"
+
+#include "../application/apis.h"
+
+#include "json.hpp"
+typedef nlohmann::json json;
+
+#include <libgen.h> // For dirname
+
+#define HEADER_BUFFER_MAX 512
+#define QUEUE_DEPTH 256
+
+#if ENABLE_CONSOLE_STATUS
+#define CONSOLE_STATUS_PRINT(...) printf(__VA_ARGS__)
+#else
+#define CONSOLE_STATUS_PRINT(...)
+#endif
+
+#if ENABLE_CONSOLE_LOGGING
+#define CONSOLE_LOG_PRINT(...) printf(__VA_ARGS__)
+#else
+#define CONSOLE_LOG_PRINT(...)
+#endif
+
+std::string getExecutablePath() {
+    std::vector<char> buf(1024);
+    ssize_t len = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+    if (len != -1) {
+        buf[len] = '\0'; // Null-terminate the string
+        return std::string(buf.data());
+    }
+    return ""; // Error or not found
+}
+
+std::string getStaticRootDirectory() {
+    std::string fullPath = getExecutablePath();
+    if (!fullPath.empty()) {
+        // dirname modifies the buffer, so a copy is needed
+        char* path_copy = new char[fullPath.length() + 1];
+        strcpy(path_copy, fullPath.c_str());
+        std::string dir = dirname(dirname(path_copy));
+        delete[] path_copy;
+        return dir;
+    }
+    return "";
+}
+
+const char* get_filename_ext(const char* filename)
+{
+    const char* dot = strrchr(filename, '.');
+    if (!dot || dot == filename) {
+        return "";
+    }
+    else {
+        return dot + 1;
+    }
+}
+
+const char* get_header_content_type(const char* extstr)
+{
+    if (strcmp("jpg", extstr) == 0) {
+        return "Content-Type: image/jpeg\r\n";
+    }
+    else if (strcmp("jpeg", extstr) == 0) {
+        return "Content-Type: image/jpeg\r\n";
+    }
+    else if (strcmp("png", extstr) == 0) {
+        return "Content-Type: image/png\r\n";
+    }
+    else if (strcmp("gif", extstr) == 0) {
+        return "Content-Type: image/gif\r\n";
+    }
+    else if (strcmp("html", extstr) == 0) {
+        return "Content-Type: text/html\r\n";
+    }
+    else if (strcmp("js", extstr) == 0) {
+        return "Content-Type: application/javascript\r\n";
+    }
+    else if (strcmp("css", extstr) == 0) {
+        return "Content-Type: text/css\r\n";
+    }
+    else if (strcmp("txt", extstr) == 0) {
+        return "Content-Type: text/plain\r\n";
+    }
+    else if (strcmp("md", extstr) == 0) {
+        return "Content-Type: text/plain\r\n";
+    }
+    else if (strcmp("json", extstr) == 0) {
+        return "Content-Type: application/json\r\n";
+    }
+    else {
+        return "Content-Type: application/octet-stream\r\n";
+    }
+}
+
+int build_dynamic_headers(size_t contents_size, char* send_buffer)
+{
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%sContent-Type: application/json\r\nContent-Length: %ld\r\n\r\n", SERVER_STRING, contents_size);
+}
+
+int build_direct_user_headers(const char* path, size_t contents_size, char* send_buffer, const char* dkind)
+{
+    const char* ftype = get_header_content_type(path);
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%s%sContent-Length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
+}
+
+int build_file_headers(const char* path, size_t contents_size, char* send_buffer)
+{
+    const char* ftype = get_header_content_type(get_filename_ext(path));
+    return std::snprintf(send_buffer, HEADER_BUFFER_MAX, "HTTP/1.0 200 OK\r\n%s%sContent-Length: %ld\r\n\r\n", SERVER_STRING, ftype, contents_size);
+}
+
+void RSHookServer::write_user_direct(UserRequest* req, size_t size, const char* data)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEvent* evt = IOClientWriteEvent::create(req, size, data);
+
+    io_uring_prep_write(sqe, req->client_socket, data, size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::write_user_direct_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
+
+    //Set the headers as the first iovec entry
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_direct_user_headers(req->route, size, header, dkind);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::None, -1);
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+
+void RSHookServer::write_user_direct_aio_wheaders(UserRequest* req, size_t size, const char* data, const char* dkind)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
+
+    //Set the headers as the first iovec entry
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_direct_user_headers(req->route, size, header, dkind);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::AIO, -1);
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::write_user_file_contents(UserRequest* req, size_t size, const char* data, bool should_release)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
+
+    //Set the headers as the first iovec entry
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, header);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_release[1] = should_release ? std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, (int32_t)size) : std::make_pair(IOClientWriteEventVectoredReleaseFlag::None, -1);
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::write_user_dynamic_response(UserRequest* req, size_t size, const char* data)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOClientWriteEventVectored* evt = IOClientWriteEventVectored::create(req);
+
+    //Set the headers as the first iovec entry
+    char* header = (char*)s_allocator.allocatebytesp2(HEADER_BUFFER_MAX);
+    int header_len = build_file_headers(req->route, size, header);
+    evt->iov[0].iov_base = header;
+    evt->iov[0].iov_len = header_len;
+    evt->iov_release[0] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, header_len);
+
+    //Set the contents as the second iovec entry
+    evt->iov[1].iov_base = (char*)data;
+    evt->iov[1].iov_len = size;
+    evt->iov_release[1] = std::make_pair(IOClientWriteEventVectoredReleaseFlag::Std, (int32_t)size);
+
+    io_uring_prep_writev(sqe, req->client_socket, evt->iov, 2, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::handle_error_code(UserRequest* req, RSErrorCode error_code)
+{
+    UserRequest* req_clone = req->clone();
+
+    switch(error_code) {
+    case RSErrorCode::MALFORMED_REQUEST:
+        this->send_static_content(req_clone, MALFORMED_REQUEST_MSG);
+        break;
+    case RSErrorCode::UNSUPPORTED_VERB:
+        this->send_static_content(req_clone, UNSUPPORTED_VERB_MSG);
+        break;
+    case RSErrorCode::ROUTE_NOT_FOUND:
+        this->send_static_content(req_clone, CONTENT_404_MSG);
+        break;
+    default:
+        this->send_static_content(req_clone, INTERNAL_SERVER_ERROR_MSG);
+        break;
+    }
+}
+
+void RSHookServer::process_user_connect(int listen_socket)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    UserRequest* req = UserRequest::create(listen_socket, nullptr, 0, nullptr);
+    IOUserRequestEvent* evt = IOUserRequestEvent::create(req, (char*)s_allocator.allocatebytesp2(HTTP_MAX_REQUEST_BUFFER_SIZE));
+
+    io_uring_prep_read(sqe, listen_socket, evt->http_request_data, HTTP_MAX_REQUEST_BUFFER_SIZE, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+std::pair<const char*, const char*> extractHTTPVerb(const char* http_request_data)
+{
+    const char* vstart = http_request_data;
+    const char* vend = strstr(http_request_data, " ");
+
+    return std::make_pair(vstart, vend);
+}
+
+std::pair<const char*, const char*> extractHTTPPath(const char* http_request_data)
+{
+    const char* pstart = strstr(http_request_data, " /") + 1;
+    const char* pend = strstr(pstart, " ");
+
+    return std::make_pair(pstart, pend);
+}
+
+size_t extractHTTPContentLength(const char* http_request_data)
+{
+    const char* clstart = strstr(http_request_data, "Content-Length: ");
+    if(clstart == nullptr) {
+        return 0;
+    }
+
+    return strtol(clstart + strlen("Content-Length: "), nullptr, 10);
+}
+
+std::pair<const char*, const char*> extractHTTPData(const char* http_request_data, size_t content_length)
+{
+    const char* dstart = strstr(http_request_data, "\r\n\r\n") + 4;
+    const char* dend = dstart + content_length;
+
+    return std::make_pair(dstart, dend);
+}
+
+bool pathMatchsRoute(const std::pair<const char*, const char*>& path, const char* match)
+{
+    return (strncmp(path.first, match, path.second - path.first) == 0);
+}
+
+void RSHookServer::process_user_request(IOUserRequestEvent* event, size_t read_size)
+{
+    event->http_request_data[read_size] = '\0'; //Null-terminate the read data
+
+    std::pair<const char*, const char*> verb = extractHTTPVerb(event->http_request_data);
+    std::pair<const char*, const char*> path = extractHTTPPath(event->http_request_data);
+
+    event->req->route = s_allocator.strcopyp2(path.first, path.second - path.first);
+    event->req->argdata = nullptr;
+
+    //TODO: standard support for common tasks
+    //    - Middleware -- auth, redirect, compression, etc.
+    //    - Logging/Perf -- also TTD, and other novel diagnostics
+    //    - Status endpoints for tasks (/endpoint/hyper-status/{taskid})
+    //    - Cancellation support
+
+    if (strncmp(verb.first, "get", verb.second - verb.first) == 0 || strncmp(verb.first, "GET", verb.second - verb.first) == 0)
+    {
+        if(pathMatchsRoute(path, "/hyper-agentic.md")) 
+        {
+            //A known route for hyper-agentic description
+
+            const char* response = "# Agentic Server\r\n\r\nThis is a static markdown file served by the Agentic server that describes the available operations in HATEOAS model (aka skills) -- each operation can also be queried in more detail on a sig specific info URI.\r\n";
+            this->send_static_content(event->req->clone(), response);
+        }
+        else if(pathMatchsRoute(path, "/sample.json")) /*Route type #1 file service -- static (permanent) files or basic caching as resources*/
+        {
+            std::pair<const char*, size_t> cached_data = this->file_cache_mgr.tryGet(event->req->route);
+            if(cached_data.first != nullptr) {
+                CONSOLE_LOG_PRINT("Cache hit for %s\n", event->req->route);
+                this->send_cache_file_content(event->req->clone(), cached_data.second, cached_data.first);
+            }
+            else {
+                char* fpath = (char*)s_allocator.allocatebytesp2(s_strlen(this->resource_root) + s_strlen("/sample.json") + 1);
+                sprintf(fpath, "%s%s", this->resource_root, "/sample.json");
+
+                this->process_http_file_access(event, fpath, true);
+            }
+        }
+        else if(pathMatchsRoute(path, "/hello")) /* Route type #2 immediate response of fixed (small) values */
+        {
+            const char* response = "{\"message\": \"Hello, world!\"}";
+            this->send_immediate_fixed_content(event->req->clone(), s_strlen(response), response, "json");
+        }
+        else if(pathMatchsRoute(path, "/helloname")) /* Route type #3 compute response based on input data inline with request */
+        {
+            size_t datalen = extractHTTPContentLength(event->http_request_data);
+            if(datalen == 0) {
+                handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+            }
+            else {
+                std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+
+                auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+                std::string name = jpayload["name"].get<std::string>();
+            
+                char* sendbuff = (char*)s_allocator.allocatebytesp2(256);
+                size_t datasize = std::snprintf(sendbuff, 256, "{\"message\": \"Hello, %s!\"}", name.c_str());
+
+                this->write_user_dynamic_response(event->req->clone(), datasize, sendbuff);
+            }
+        }
+        else if(pathMatchsRoute(path, "/fib")) /* Route type #4 compute response based on input data but run on thread-pool for non-blocking */
+        {
+            //TODO: more task specialization
+            //   - Allow priority support
+            //   - Allow for timeouts too
+            //   - Result processing options (streaming with status updates, status endpoints, or just blocking)
+
+            size_t datalen = extractHTTPContentLength(event->http_request_data);
+            if(datalen == 0) {
+                handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+            }
+            else {
+                std::pair<const char*, const char*> data = extractHTTPData(event->http_request_data, datalen);
+
+                auto jpayload = json::parse(data.first, data.second, nullptr, false, false);
+                int64_t value = jpayload["value"].get<int64_t>();
+
+                //Compute Fibonacci (inefficiently on purpose) -- run in separate thread with callback/futex for iouring 
+                this->process_job_request(event, value);
+            }
+        }
+        else
+        {
+            handle_error_code(event->req, RSErrorCode::ROUTE_NOT_FOUND);
+        }
+    }
+    else
+    {
+        /* posts here and more */
+
+        handle_error_code(event->req, RSErrorCode::UNSUPPORTED_VERB);
+    }
+}
+
+void RSHookServer::process_http_file_access(IOUserRequestEvent* req, const char* file_path, bool memoize)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOFileStatEvent* evt = IOFileStatEvent::create(req, file_path, memoize);
+
+    io_uring_prep_statx(sqe, AT_FDCWD, file_path, AT_STATX_SYNC_AS_STAT, STATX_ALL, &evt->stat_buf);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::process_fstat_result(IOFileStatEvent* event)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOFileOpenEvent* evt = IOFileOpenEvent::create(event, event->stat_buf, event->memoize);
+
+    io_uring_prep_openat(sqe, AT_FDCWD, evt->file_path, O_RDONLY | O_NONBLOCK, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::process_fopen_result(IOFileOpenEvent* event, int file_descriptor)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOFileReadEvent* evt = IOFileReadEvent::create(event, file_descriptor, event->stat_buf.stx_size, (char*)s_allocator.allocatebytesp2(event->stat_buf.stx_size + 1), event->memoize);
+
+    io_uring_prep_read(sqe, file_descriptor, evt->file_data, evt->size, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::process_fread_result(IOFileReadEvent* event)
+{
+    //Add null terminator for uniformity on the read file (note we made sure there was an extra byte allocated)
+    event->file_data[event->size] = '\0';
+
+    ////
+    //Setup the response to the user now that we have the file data and handle any caching
+    //Right now everything is cached permanently 
+    const char* cdata = this->file_cache_mgr.put(event->req->route, s_strlen(event->req->route), s_allocator.strcopyp2(event->file_data), event->size);
+    this->send_cache_file_content(event->req->clone(), event->size, cdata);
+
+    ////
+    //Setup the close event to clean up the file descriptor
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    IOFileCloseEvent* evt = IOFileCloseEvent::create(event);
+
+    io_uring_prep_close(sqe, event->file_fd);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+}
+
+void RSHookServer::process_fclose_result(IOFileCloseEvent* event)
+{
+    //no continuation as of now -- just stop processing
+}
+
+void RSHookServer::process_job_request(IOUserRequestEvent* event, int64_t value)
+{
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+
+    //setup a uni-pipe to signal the thread completion -- depending on thread pool we might want to save these per thread too
+    int pfd[2] = {0};
+    int pok = pipe(pfd);
+
+    assert(pok == 0);
+
+    IOJobCompleteEvent* evt = IOJobCompleteEvent::create(event, pfd[0], pfd[1]);
+
+    //TODO: right now we are hacky in arg/result representation and just creating a new thread per request -- later we need to be buffer clean and use a thread-pool
+    //    - Also backpresure - both dropping requests and providing a standard way to check on load (maybe endpoint)
+    //    - Would be cool to use Bosque to support migration of tasks too
+    std::thread tl([value, evt]() {
+        CONSOLE_LOG_PRINT("Thread running...\n");
+
+        int64_t result_value = fib(value);
+
+        evt->result = s_aio_allocator.allocAIOBuffer();
+        evt->size = std::snprintf((char*)evt->result, AIO_BUFFER_SIZE, "{\"value\": %ld}", result_value);
+
+        CONSOLE_LOG_PRINT("Thread done\n");
+        auto bw = write(evt->wpipe, "T", 1); //wake up the io_uring wait
+        assert(bw == 1);
+    });
+    evt->m_tid = tl.get_id();
+
+    io_uring_prep_read(sqe, evt->rpipe, evt->status, 1, 0);
+    io_uring_sqe_set_data(sqe, evt);
+
+    this->submission_count++; //track number of submissions for batching
+    tl.detach();
+}
+
+void RSHookServer::process_job_complete(IOJobCompleteEvent* event)
+{
+    uint8_t* data = event->result;
+    event->result = nullptr;
+
+    close(event->rpipe);
+    close(event->wpipe);
+
+    this->send_compute_content(event->req->clone(), event->size, (char*)data, "json");
+}
+
+RSHookServer::RSHookServer() : port(0), server_socket(-1), ring(), submission_count(0), file_cache_mgr()
+{
+    ;
+}
+
+RSHookServer::~RSHookServer()
+{
+    ;
+}
+
+void RSHookServer::startup(int port, int server_socket)
+{
+    this->port = port;
+    this->server_socket = server_socket;
+
+    std::string resourcedir = getStaticRootDirectory() + "/static";
+    this->resource_root = s_allocator.strcopyp2(resourcedir.c_str());
+
+    this->submission_count = 0;
+    io_uring_queue_init(QUEUE_DEPTH, &this->ring, 0);
+
+    //TODO: want to allow pre-launch setup
+}
+
+void RSHookServer::shutdown()
+{
+    CONSOLE_STATUS_PRINT("Shutting down server...\n");
+    //TODO: need to gracefully stop accepting new connections and wait for existing ones to finish then exit
+
+    io_uring_queue_exit(&this->ring);
+
+    this->file_cache_mgr.clear();
+
+    CONSOLE_STATUS_PRINT("Server shutdown complete.\n");
+}
+
+void RSHookServer::runloop()
+{
+    CONSOLE_STATUS_PRINT("Server starting...\n");
+
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&this->ring);
+    io_uring_prep_multishot_accept(sqe, this->server_socket, nullptr, nullptr, 0);
+
+    io_uring_sqe_set_data64(sqe, RING_EVENT_TYPE_ACCEPT);
+    io_uring_submit(&this->ring);
+
+    CONSOLE_STATUS_PRINT("Server listening...\n");
+
+    while (1) {
+        assert(this->submission_count == 0);
+        
+        struct io_uring_cqe* cqe;
+        int ret = io_uring_wait_cqe(&this->ring, &cqe);
+        if (ret < 0) {
+            CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
+            continue;
+        }
+
+        while(1) {
+            if((cqe->user_data & RING_EVENT_TYPE_ACCEPT) == RING_EVENT_TYPE_ACCEPT) {
+                this->process_user_connect(cqe->res);
+            }
+            else {
+                IOEvent* event = (IOEvent*)cqe->user_data;
+
+                switch (event->io_event_type) {
+                    case RING_EVENT_IO_CLIENT_READ: {
+                        CONSOLE_LOG_PRINT("Handling user request event -- %x\n", event->req->client_socket);
+
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error reading from client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::MALFORMED_REQUEST);
+                            break;
+                        }
+
+                        this->process_user_request((IOUserRequestEvent*)event, cqe->res);
+                        break;
+                    }
+                    case RING_EVENT_IO_CLIENT_WRITE: {
+                        CONSOLE_LOG_PRINT("Handling file write event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
+
+                        //either way the user has been responded to just cleanup
+                        close(event->req->client_socket);
+                        break;
+                    }
+                    case RING_EVENT_IO_CLIENT_WRITE_VECTORED: {
+                        CONSOLE_LOG_PRINT("Handling vectored write event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error writing to client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                        }
+                        
+                        //either way the user has been responded to just cleanup
+                        close(event->req->client_socket);
+                        break;
+                    }
+                    case RING_EVENT_IO_FILE_STAT: {
+                        CONSOLE_LOG_PRINT("Handling file stat event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        IOFileStatEvent* eevt = (IOFileStatEvent*)event;
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error processing file stat from client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(eevt->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+                        this->process_fstat_result(eevt);
+                        break;
+                    }
+                    case RING_EVENT_IO_FILE_OPEN: {
+                        CONSOLE_LOG_PRINT("Handling file open event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error opening file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+                        
+                        this->process_fopen_result((IOFileOpenEvent*)event, cqe->res);
+                        break;
+                    }
+                    case RING_EVENT_IO_FILE_READ: {
+                        CONSOLE_LOG_PRINT("Handling file read event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error reading file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+
+                        this->process_fread_result((IOFileReadEvent*)event);
+                        break;
+                    }
+                    case RING_EVENT_IO_FILE_CLOSE: {
+                        CONSOLE_LOG_PRINT("Handling file close event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error closing file for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+                        
+                        this->process_fclose_result((IOFileCloseEvent*)event);
+                        break;
+                    }
+                    case RING_EVENT_JOB_COMPLETE: {
+                        CONSOLE_LOG_PRINT("Handling job request completion event -- %x %s\n", event->req->client_socket, event->req->route);
+                        
+                        if (cqe->res < 0) {
+                            CONSOLE_LOG_PRINT("Error processing job request for client socket %d: %s\n", event->req->client_socket, strerror(-cqe->res));
+                            handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                            break;
+                        }
+                        
+                        this->process_job_complete((IOJobCompleteEvent*)event);
+                        break;
+                    }
+                    default: {
+                        CONSOLE_LOG_PRINT("Unexpected req type %d\n", event->io_event_type);
+                        
+                        handle_error_code(event->req, RSErrorCode::INTERNAL_SERVER_ERROR);
+                        break;
+                    }
+                }
+
+                event->release();
+            }
+
+            io_uring_cqe_seen(&this->ring, cqe);
+
+            if (io_uring_sq_space_left(&this->ring) < 16) {
+                break;     // the submission queue is full
+            }
+
+            ret = io_uring_peek_cqe(&this->ring, &cqe);
+            if (ret == -EAGAIN) {
+                break;     // no remaining work in completion queue
+            }
+
+            if (ret < 0) {
+                CONSOLE_LOG_PRINT("Fatal error waiting for CQE: %s\n", strerror(-ret));
+                assert(false);
+            }
+        }
+
+        if (this->submission_count > 0) {
+            io_uring_submit(&this->ring);
+            this->submission_count = 0;
+        }
+    }
+}
